@@ -316,7 +316,7 @@ function Format-ResetTime([string]$isoStr, [string]$style) {
         $dt = [DateTimeOffset]::Parse($isoStr).LocalDateTime
         switch ($style) {
             "time"     { return $dt.ToString("h:mmtt").ToLower() }
-            "datetime" { return $dt.ToString("ddd MMM d, h:mmtt").ToLower() }
+            "datetime" { return $dt.ToString("ddd h:mmtt").ToLower() }
             default    { return $dt.ToString("MMM d").ToLower() }
         }
     } catch { return $null }
@@ -329,7 +329,7 @@ function Format-EpochResetTime([object]$epoch, [string]$style) {
         $dt = [DateTimeOffset]::FromUnixTimeSeconds([long]$epoch).LocalDateTime
         switch ($style) {
             "time"     { return $dt.ToString("h:mmtt").ToLower() }
-            "datetime" { return $dt.ToString("ddd MMM d, h:mmtt").ToLower() }
+            "datetime" { return $dt.ToString("ddd h:mmtt").ToLower() }
             default    { return $dt.ToString("MMM d").ToLower() }
         }
     } catch { return $null }
