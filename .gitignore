@@ -1,0 +1,12 @@
+# Local-only dev files — intentionally not shipped in the public repo.
+# This repo is cloned to ~/.claude/statusline, so anything tracked ships to every user.
+CLAUDE.md
+handoff.md
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+*.swp
+*~
