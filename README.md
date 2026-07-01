@@ -1,6 +1,6 @@
 # Claude Code Status Line
 
-A custom status line for [Claude Code](https://claude.com/claude-code) that displays model info, token usage, rate limits, and reset times in a single compact line. It runs as an external shell command, so it does not slow down Claude Code or consume any extra tokens.
+A custom status line for [Claude Code](https://claude.com/claude-code) that displays the model, reasoning effort, token usage, rate limits, reset times, and the installed CLI version in a single compact line. It runs as an external shell command, so it does not slow down Claude Code or consume any extra tokens.
 
 ## Screenshot
 
@@ -8,18 +8,23 @@ A custom status line for [Claude Code](https://claude.com/claude-code) that disp
 
 ## What it shows
 
+Segments render left to right in this order:
+
 | Segment | Description |
 |---------|-------------|
-| **Model** | Current model name (e.g., Opus 4.7) |
-| **CWD@Branch** | Current folder name, git branch, and file changes (+/-) |
-| **Tokens** | Used / total context window tokens (% used) |
-| **Effort** | Reasoning effort level (low, med, high, xhigh) |
-| **5h** | 5-hour rate limit usage percentage and reset time |
-| **7d** | 7-day rate limit usage percentage and reset time |
-| **Extra** | Extra usage credits spent / limit (if enabled) |
-| **Update** | Appears when a new version is available (checked every 24h) |
+| **Model** | Current model name (e.g., Opus 4.8); a `(1M context)` suffix collapses to `1M` |
+| **Effort** | Reasoning effort level (`low`, `med`, `high`, `xhigh`, `max`); a `✦` is appended when extended thinking is enabled |
+| **CWD@Branch** | Current folder name, git branch, and uncommitted file changes (+/-) |
+| **Tokens** | Used / total context-window tokens (% used) |
+| **5h** | 5-hour rate-limit usage percentage and reset time |
+| **7d** | 7-day rate-limit usage percentage and reset time |
+| **Extra** | Extra-usage credits spent / limit (appears automatically once any extra usage has been spent this month) |
+| **Version** | Installed Claude Code CLI version |
+| **Update** | A second line that appears when a new release is available (checked every 24h) |
 
-Usage percentages are color-coded: green (<50%) → yellow (≥50%) → orange (≥70%) → red (≥90%).
+The model and effort segments are joined by a space; every other segment is separated by ` | `.
+
+Usage percentages are floored and color-coded: green (&lt;50%) → yellow (≥50%) → orange (≥70%) → red (≥90%).
 
 ## Installation
 
@@ -65,6 +70,10 @@ To disable the update check entirely (no network calls):
 ```bash
 export STATUSLINE_CHECK_UPDATES=false
 ```
+
+## Changelog
+
+See [CHANGELOG.md](CHANGELOG.md) for release history.
 
 ## License
 
