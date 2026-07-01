@@ -6,7 +6,7 @@
 # separator. The ✦ after the effort word appears only when thinking.enabled is true.
 
 set -f  # disable globbing
-VERSION="1.4.4"
+VERSION="1.5.0"
 
 input=$(cat)
 
@@ -15,17 +15,21 @@ if [ -z "$input" ]; then
     exit 0
 fi
 
-# ANSI colors matching oh-my-posh theme
-blue='\033[38;2;0;153;255m'
-orange='\033[38;2;255;176;85m'
-green='\033[38;2;0;160;0m'
-cyan='\033[38;2;46;149;153m'
-red='\033[38;2;255;85;85m'
-yellow='\033[38;2;230;200;0m'
-purple='\033[38;2;167;139;250m'
-white='\033[38;2;220;220;220m'
-dim='\033[2m'
-reset='\033[0m'
+# ANSI colors matching oh-my-posh theme.
+# Stored as REAL escape bytes via $'...' (ANSI-C quoting) rather than literal '\033' strings.
+# This lets the final output use printf '%s' instead of '%b': '%b' would also expand any
+# backslash escape (\n, \t) embedded in JSON-derived fields (display_name, cwd, branch),
+# which could split or corrupt the single line. Real bytes here + '%s' at the end = safe.
+blue=$'\033[38;2;0;153;255m'
+orange=$'\033[38;2;255;176;85m'
+green=$'\033[38;2;0;160;0m'
+cyan=$'\033[38;2;46;149;153m'
+red=$'\033[38;2;255;85;85m'
+yellow=$'\033[38;2;230;200;0m'
+purple=$'\033[38;2;167;139;250m'
+white=$'\033[38;2;220;220;220m'
+dim=$'\033[2m'
+reset=$'\033[0m'
 
 # Format token counts (e.g., 50k / 200k)
 format_tokens() {
@@ -45,6 +49,14 @@ format_tokens() {
             printf "%d", n
         }
     }'
+}
+
+# Floor a (possibly fractional) percentage to an integer, matching PowerShell's
+# [math]::Floor and the token-context % path (awk printf %d truncates toward zero).
+# All usage percentages floor rather than round so the two mirrors agree and so a
+# boundary value like 89.6 doesn't cross a color threshold in one script but not the other.
+floor_pct() {
+    awk -v n="$1" 'BEGIN { printf "%d", n }'
 }
 
 # Return color escape based on usage percentage
@@ -118,6 +130,10 @@ elif [ -f "$settings_path" ]; then
     [ -n "$effort_val" ] && effort_level="$effort_val"
 fi
 [ -z "$effort_level" ] && effort_level="medium"
+# Lowercase so matching is case-insensitive and identical to PowerShell's switch (which is
+# case-insensitive by default). Claude Code sends lowercase; this only affects odd inputs
+# like CLAUDE_CODE_EFFORT_LEVEL=Max, which must render the same on both mirrors.
+effort_level=$(printf '%s' "$effort_level" | tr '[:upper:]' '[:lower:]')
 
 # Extended-thinking flag — drives the ✦ marker fused onto the effort word below.
 thinking_enabled=$(echo "$input" | jq -r '.thinking.enabled // empty')
@@ -281,9 +297,9 @@ fi
 # resets_at timestamps, so we trust those.
 effective_builtin=false
 if $use_builtin; then
-    # Trust builtin if any percentage is non-zero
-    if { [ -n "$builtin_five_hour_pct" ] && [ "$(printf '%.0f' "$builtin_five_hour_pct" 2>/dev/null)" != "0" ]; } || \
-       { [ -n "$builtin_seven_day_pct" ] && [ "$(printf '%.0f' "$builtin_seven_day_pct" 2>/dev/null)" != "0" ]; }; then
+    # Trust builtin if any percentage is non-zero (floored, matching PowerShell's Floor)
+    if { [ -n "$builtin_five_hour_pct" ] && [ "$(floor_pct "$builtin_five_hour_pct")" != "0" ]; } || \
+       { [ -n "$builtin_seven_day_pct" ] && [ "$(floor_pct "$builtin_seven_day_pct")" != "0" ]; }; then
         effective_builtin=true
     fi
     # Also trust if reset timestamps are present — genuine zero responses include valid reset times
@@ -311,12 +327,16 @@ if $needs_refresh; then
         client_version=$(echo "$input" | jq -r '.version // empty')
         [ -z "$client_version" ] && client_version="$cli_version"
         [ -z "$client_version" ] && client_version="2.1.197"
-        response=$(curl -s --max-time 10 \
+        # Pass the OAuth token via a curl config read from stdin, NOT as a '-H' argv element.
+        # A command-line "-H Authorization: Bearer <token>" is world-readable in /proc/<pid>/cmdline
+        # and `ps` for the request's lifetime. `printf` is a bash builtin (no fork), so the token
+        # never lands in any process's argv; curl reads the header from the piped --config -.
+        response=$(printf 'header = "Authorization: Bearer %s"\n' "$token" | curl -s --max-time 10 \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
-            -H "Authorization: Bearer $token" \
             -H "anthropic-beta: oauth-2025-04-20" \
             -H "User-Agent: claude-code/${client_version}" \
+            --config - \
             "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
         # Only cache valid usage responses (not error/rate-limit JSON)
         if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then
@@ -427,7 +447,7 @@ render_extra_usage() {
         # It reappears automatically once used_credits > 0 (i.e. $used is no longer 0.00).
         [ "$used" = "0.00" ] && return
 
-        pct=$(echo "$data" | jq -r '.extra_usage.utilization // 0' | awk '{printf "%.0f", $1}')
+        pct=$(echo "$data" | jq -r '.extra_usage.utilization // 0' | awk '{printf "%d", $1}')
         color=$(usage_color "$pct")
         out+="${sep}${white}extra${reset} ${color}\$${used}/\$${limit}${reset}"
     else
@@ -439,7 +459,7 @@ if $effective_builtin; then
     # ---- Use rate_limits data provided directly by Claude Code in JSON input ----
     # resets_at values are Unix epoch integers in this source
     if [ -n "$builtin_five_hour_pct" ]; then
-        five_hour_pct=$(printf "%.0f" "$builtin_five_hour_pct")
+        five_hour_pct=$(floor_pct "$builtin_five_hour_pct")
         five_hour_color=$(usage_color "$five_hour_pct")
         out+="${sep}${white}5h${reset} ${five_hour_color}${five_hour_pct}%${reset}"
         if [ -n "$builtin_five_hour_reset" ] && [ "$builtin_five_hour_reset" != "null" ]; then
@@ -449,7 +469,7 @@ if $effective_builtin; then
     fi
 
     if [ -n "$builtin_seven_day_pct" ]; then
-        seven_day_pct=$(printf "%.0f" "$builtin_seven_day_pct")
+        seven_day_pct=$(floor_pct "$builtin_seven_day_pct")
         seven_day_color=$(usage_color "$seven_day_pct")
         out+="${sep}${white}7d${reset} ${seven_day_color}${seven_day_pct}%${reset}"
         if [ -n "$builtin_seven_day_reset" ] && [ "$builtin_seven_day_reset" != "null" ]; then
@@ -485,7 +505,7 @@ if $effective_builtin; then
 elif [ -n "$usage_data" ] && echo "$usage_data" | jq -e '.five_hour' >/dev/null 2>&1; then
     # ---- Fall back: API-fetched usage data ----
     # ---- 5-hour (current) ----
-    five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%.0f", $1}')
+    five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%d", $1}')
     five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
     five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
     five_hour_color=$(usage_color "$five_hour_pct")
@@ -494,7 +514,7 @@ elif [ -n "$usage_data" ] && echo "$usage_data" | jq -e '.five_hour' >/dev/null 
     [ -n "$five_hour_reset" ] && out+=" ${dim}@${five_hour_reset}${reset}"
 
     # ---- 7-day (weekly) ----
-    seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%.0f", $1}')
+    seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%d", $1}')
     seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
     seven_day_reset=$(format_reset_time "$seven_day_reset_iso" "datetime")
     seven_day_color=$(usage_color "$seven_day_pct")
@@ -545,7 +565,7 @@ if [ "${STATUSLINE_CHECK_UPDATES:-true}" != "false" ]; then
     if [ -n "$version_data" ]; then
         latest_tag=$(echo "$version_data" | jq -r '.tag_name // empty')
         if [ -n "$latest_tag" ] && version_gt "$latest_tag" "$VERSION"; then
-            update_line="\n${dim}Update available: ${latest_tag} → Tell Claude: \"Find my installed status bar and update it\"${reset}"
+            update_line=$'\n'"${dim}Update available: ${latest_tag} → Tell Claude: \"Find my installed status bar and update it\"${reset}"
         fi
     fi
 fi
@@ -555,7 +575,8 @@ if [ -n "$cli_version" ]; then
     out+=" ${dim}|${reset} ${orange}v${cli_version}${reset}"
 fi
 
-# Output
-printf "%b" "$out$update_line"
+# Output. '%s' (not '%b') so backslash escapes in JSON-derived fields are printed literally
+# and can't split the line; colors and the update-line newline are already real bytes above.
+printf '%s' "$out$update_line"
 
 exit 0

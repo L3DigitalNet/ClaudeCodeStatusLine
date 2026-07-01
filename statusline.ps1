@@ -1,7 +1,7 @@
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
-$VERSION = "1.4.4"
+$VERSION = "1.5.0"
 # Single line: Model effort[✦thinking] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
 # Model and effort are joined by a plain space (no ' | ' between them); every other block keeps its ' | '
 # separator. The ✦ after the effort word appears only when thinking.enabled is true.
@@ -36,9 +36,12 @@ function Format-Tokens([long]$num) {
     # value so 999500..999999 promote to 1M instead of an out-of-range "1000k". Suffixes
     # follow SI casing — lowercase k, uppercase M — matching the model block's "1M".
     if ($num -ge 1000000) {
+        # Invariant culture for the decimal separator, matching Bash awk's period output;
+        # a comma-decimal locale would otherwise render "1,2M" here where Bash prints "1.2M".
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
         $val = [math]::Round($num / 1000000.0, 1, [MidpointRounding]::AwayFromZero)
-        if ($val -eq [math]::Floor($val)) { return "{0:F0}M" -f $val }
-        return "{0:F1}M" -f $val
+        if ($val -eq [math]::Floor($val)) { return $val.ToString("F0", $inv) + "M" }
+        return $val.ToString("F1", $inv) + "M"
     }
     elseif ($num -ge 1000) {
         $k = [int][math]::Round($num / 1000.0, 0, [MidpointRounding]::AwayFromZero)
@@ -121,6 +124,10 @@ if ($data.effort.level) {
     }
 }
 if (-not $effortLevel) { $effortLevel = "medium" }
+# Lowercase so the rendered word matches Bash, which lowercases before its case statement.
+# (PowerShell's switch is already case-insensitive, but the arms echo $effortLevel verbatim,
+# so without this an input like "Max" would render capitalized here but lowercase in Bash.)
+$effortLevel = ([string]$effortLevel).ToLower()
 
 # Extended-thinking flag — drives the ✦ marker fused onto the effort word below.
 $thinkingEnabled = $data.thinking.enabled
@@ -271,9 +278,14 @@ if ($useBuiltin) {
     }
 }
 
-# Cache setup — used as primary source for API path, and as fallback when builtin reports zero
+# Cache setup — used as primary source for API path, and as fallback when builtin reports zero.
+# Key the filename by an 8-char sha256 of the config dir (mirrors statusline.sh) so distinct
+# CLAUDE_CONFIG_DIR accounts don't share/clobber one cache and read each other's usage figures.
 $cacheDir = Join-Path $env:TEMP "claude"
-$cacheFile = Join-Path $cacheDir "statusline-usage-cache.json"
+$cfgHash = ([System.BitConverter]::ToString(
+    [System.Security.Cryptography.SHA256]::Create().ComputeHash(
+        [System.Text.Encoding]::UTF8.GetBytes($claudeConfigDir))) -replace '-', '').ToLower().Substring(0, 8)
+$cacheFile = Join-Path $cacheDir "statusline-usage-cache-$cfgHash.json"
 $cacheMaxAge = 60  # seconds between API calls
 
 if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
@@ -281,8 +293,10 @@ if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -
 $needsRefresh = $true
 $usageData = $null
 
-# Always load cache — available as fallback regardless of data source
-if (Test-Path $cacheFile) {
+# Always load cache — available as fallback regardless of data source. Require a NON-EMPTY file
+# (mirrors Bash's `[ -s ]`): a concurrent pane's 0-byte stampede-lock file must not be trusted as
+# fresh, or this pane would skip its own fetch and render with no usage data.
+if ((Test-Path $cacheFile) -and ((Get-Item $cacheFile).Length -gt 0)) {
     $cacheMtime = (Get-Item $cacheFile).LastWriteTime
     $cacheAge = ((Get-Date) - $cacheMtime).TotalSeconds
     if ($cacheAge -lt $cacheMaxAge) {
@@ -319,8 +333,13 @@ if ($needsRefresh) {
             }
             $response = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" `
                 -Headers $headers -Method Get -TimeoutSec 10 -ErrorAction Stop
-            $usageData = $response | ConvertTo-Json -Depth 10
-            $usageData | Set-Content $cacheFile -Force
+            # Only cache a real usage payload (mirrors Bash's `jq -e '.five_hour'`). A 200 with an
+            # unexpected body (maintenance/error JSON, shape change) would otherwise poison the cache
+            # for the full TTL and render as "5h 0% | 7d 0%"; reject it and keep the last-valid cache.
+            if ($null -ne $response.five_hour) {
+                $usageData = $response | ConvertTo-Json -Depth 10
+                $usageData | Set-Content $cacheFile -Force
+            }
         } catch {}
     }
     # Fall back to stale cache
@@ -340,9 +359,10 @@ function Format-ResetTime([string]$isoStr, [string]$style) {
     try {
         $dt = [DateTimeOffset]::Parse($isoStr).LocalDateTime
         switch ($style) {
-            "time"     { return $dt.ToString("h:mmtt").ToLower() }
-            "datetime" { return $dt.ToString("ddd@h:mmtt").ToLower() }
-            default    { return $dt.ToString("MMM d").ToLower() }
+            # 24-hour, capitalized, invariant culture — matches Bash strftime %H:%M / %a@%H:%M / %b %-d.
+            "time"     { return $dt.ToString("HH:mm", [System.Globalization.CultureInfo]::InvariantCulture) }
+            "datetime" { return $dt.ToString("ddd@HH:mm", [System.Globalization.CultureInfo]::InvariantCulture) }
+            default    { return $dt.ToString("MMM d", [System.Globalization.CultureInfo]::InvariantCulture) }
         }
     } catch { return $null }
 }
@@ -353,9 +373,10 @@ function Format-EpochResetTime([object]$epoch, [string]$style) {
     try {
         $dt = [DateTimeOffset]::FromUnixTimeSeconds([long]$epoch).LocalDateTime
         switch ($style) {
-            "time"     { return $dt.ToString("h:mmtt").ToLower() }
-            "datetime" { return $dt.ToString("ddd@h:mmtt").ToLower() }
-            default    { return $dt.ToString("MMM d").ToLower() }
+            # 24-hour, capitalized, invariant culture — matches Bash strftime %H:%M / %a@%H:%M / %b %-d.
+            "time"     { return $dt.ToString("HH:mm", [System.Globalization.CultureInfo]::InvariantCulture) }
+            "datetime" { return $dt.ToString("ddd@HH:mm", [System.Globalization.CultureInfo]::InvariantCulture) }
+            default    { return $dt.ToString("MMM d", [System.Globalization.CultureInfo]::InvariantCulture) }
         }
     } catch { return $null }
 }
@@ -376,17 +397,21 @@ function Format-ExtraUsage($usage) {
         # Show dollar figures only when both credit values are numeric. When they are absent
         # or malformed, fall back to a plain "enabled" marker rather than silently rendering
         # nothing. (This 'else' branch was previously unreachable.)
+        # Parse and format with invariant culture so the decimal is always '.', matching Bash's
+        # LC_NUMERIC=C awk. Without this, comma-decimal locales (de-DE/fr-FR) render "0,00" — which
+        # both looks wrong AND defeats the "0.00" hide guard below, showing a $0 block that Bash hides.
+        $inv = [System.Globalization.CultureInfo]::InvariantCulture
         $usedNum = 0.0
         $limitNum = 0.0
-        if ([double]::TryParse([string]$usedRaw, [ref]$usedNum) -and
-            [double]::TryParse([string]$limitRaw, [ref]$limitNum)) {
-            $used = "{0:F2}" -f ($usedNum / 100)
+        if ([double]::TryParse([string]$usedRaw, [System.Globalization.NumberStyles]::Float, $inv, [ref]$usedNum) -and
+            [double]::TryParse([string]$limitRaw, [System.Globalization.NumberStyles]::Float, $inv, [ref]$limitNum)) {
+            $used = ($usedNum / 100).ToString("F2", $inv)
 
             # Hide the block entirely until some extra usage has been spent this month.
             # It reappears automatically once used_credits > 0 (i.e. $used is no longer 0.00).
             if ($used -eq "0.00") { return "" }
 
-            $limit = "{0:F2}" -f ($limitNum / 100)
+            $limit = ($limitNum / 100).ToString("F2", $inv)
             $pct = [math]::Floor([double](Coalesce $usage.extra_usage.utilization 0))
             $color = Get-UsageColor $pct
             return "${sep}${white}extra${reset} ${color}`$${used}/`$${limit}${reset}"
@@ -455,8 +480,10 @@ if ($effectiveBuiltin) {
     }
     $fallbackJson = "{`"five_hour`":{`"utilization`":$fhVal,`"resets_at`":$fhResetJson},`"seven_day`":{`"utilization`":$sdVal,`"resets_at`":$sdResetJson},`"extra_usage`":$extraJson}"
     $fallbackJson | Set-Content $cacheFile -Force
-} elseif ($parsedUsage) {
+} elseif ($parsedUsage -and $null -ne $parsedUsage.five_hour) {
     # ---- Fall back: API-fetched usage data ----
+    # Require .five_hour (mirrors Bash's `jq -e '.five_hour'`) so a cache object lacking it
+    # falls through to the placeholder branch instead of rendering a misleading "5h 0% | 7d 0%".
     try {
         # ---- 5-hour (current) ----
         $fiveHourPct = [math]::Floor([double](Coalesce $parsedUsage.five_hour.utilization 0))
@@ -478,6 +505,10 @@ if ($effectiveBuiltin) {
 
         $out += Format-ExtraUsage $parsedUsage
     } catch {}
+} else {
+    # No valid usage data — show placeholders (mirrors statusline.sh's terminal else branch).
+    $out += "${sep}${white}5h${reset} ${dim}-${reset}"
+    $out += "${sep}${white}7d${reset} ${dim}-${reset}"
 }
 
 # ===== Update check (cached, 24h TTL) =====
