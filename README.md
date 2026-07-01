@@ -14,7 +14,7 @@ Segments render left to right in this order:
 |---------|-------------|
 | **Model** | Current model name (e.g., Opus 4.8); a `(1M context)` suffix collapses to `1M` |
 | **Effort** | Reasoning effort level (`low`, `med`, `high`, `xhigh`, `max`); a `✦` is appended when extended thinking is enabled |
-| **CWD@Branch** | Current folder name, git branch, and uncommitted file changes (+/-) |
+| **CWD@Branch** | Current folder name, git branch, and unstaged line changes (+/-, tracked files only — staged and untracked changes aren't counted) |
 | **Tokens** | Used / total context-window tokens (% used) |
 | **5h** | 5-hour rate-limit usage percentage and reset time |
 | **7d** | 7-day rate-limit usage percentage and reset time |

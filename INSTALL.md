@@ -4,8 +4,8 @@ This document is the authoritative install guide. It is written to be executed s
 
 ## 1. Detect the operating system
 
-- **macOS or Linux** → use `statusline.sh`
-- **Windows** (PowerShell, CMD, Git Bash, or WSL) → use `statusline.ps1`
+- **macOS, Linux, or WSL** → use `statusline.sh` (WSL is a real Linux userland with bash/jq/curl available by default)
+- **Windows-native shells** (PowerShell, CMD, Git Bash) → use `statusline.ps1`
 
 ## 2. Clone the repo
 
@@ -87,8 +87,8 @@ No `settings.json` changes are needed — the command path is stable across vers
 ## Requirements
 
 - Claude Code (Pro/Max subscription for rate-limit and extra-usage display)
-- `git` in `PATH`
-- macOS / Linux: `jq` and `curl`
+- macOS / Linux: `jq` and `curl` (required)
 - Windows: PowerShell 5.1+ (default on Windows 10/11)
+- `git` in `PATH` (optional — enables the `@branch` and `(+/-)` annotation next to the working directory; the status line still renders everything else without it)
 
 If `jq` is missing on macOS/Linux, install it with the system package manager (`brew install jq`, `apt install jq`, etc.).

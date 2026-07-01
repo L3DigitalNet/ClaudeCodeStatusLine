@@ -37,9 +37,10 @@ aligned the two mirrors and closed several robustness and security gaps.
   value like `89.6` from crossing a color threshold in one script but not the other. It also
   aligns the "is this builtin data trustworthy?" check, so a sub-1% value no longer rounds
   up to a trusted `1%` in Bash while PowerShell treats it as `0`.
-- **PowerShell reset times** render 24-hour, capitalized, invariant-culture
-  (`14:30` / `Mon@14:30` / `Jul 1`) to match the Bash strftime output, instead of
-  12-hour lowercase am/pm.
+- **Reset times are 24-hour and locale-invariant in both mirrors.** PowerShell renders
+  `14:30` / `Mon@14:30` / `Jul 1` via `InvariantCulture` (instead of 12-hour lowercase am/pm),
+  and Bash pins `LC_ALL=C` on the `%a`/`%b` `date` calls so the weekday/month abbreviations are
+  English/capitalized regardless of the host `LC_TIME` locale.
 - **Effort word is lowercased** before matching in both scripts, so a non-canonical input
   like `Max` renders identically (previously Bash's `case` was case-sensitive while
   PowerShell's `switch` was not).
