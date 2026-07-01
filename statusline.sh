@@ -1,7 +1,7 @@
 #!/bin/bash
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
-# Single line: Model | tokens | %used | %remain | think | 5h bar @reset | 7d bar @reset | extra
+# Single line: Model | effort | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
 
 set -f  # disable globbing
 VERSION="1.4.4"
@@ -137,6 +137,17 @@ fi
 out=""
 out+="${blue}${model_name}${reset}"
 
+# Effort — second from the left, immediately after the model block (no label)
+out+=" ${dim}|${reset} "
+case "$effort_level" in
+    low)    out+="${dim}${effort_level}${reset}" ;;
+    medium) out+="${orange}med${reset}" ;;
+    high)   out+="${green}${effort_level}${reset}" ;;
+    xhigh)  out+="${purple}${effort_level}${reset}" ;;
+    max)    out+="${red}${effort_level}${reset}" ;;
+    *)      out+="${green}${effort_level}${reset}" ;;
+esac
+
 # Current working directory
 cwd=$(echo "$input" | jq -r '.cwd // empty')
 if [ -n "$cwd" ]; then
@@ -153,16 +164,6 @@ fi
 
 out+=" ${dim}|${reset} "
 out+="${orange}${used_tokens}/${total_tokens}${reset} ${dim}(${reset}${green}${pct_used}%${reset}${dim})${reset}"
-out+=" ${dim}|${reset} "
-out+="effort: "
-case "$effort_level" in
-    low)    out+="${dim}${effort_level}${reset}" ;;
-    medium) out+="${orange}med${reset}" ;;
-    high)   out+="${green}${effort_level}${reset}" ;;
-    xhigh)  out+="${purple}${effort_level}${reset}" ;;
-    max)    out+="${red}${effort_level}${reset}" ;;
-    *)      out+="${green}${effort_level}${reset}" ;;
-esac
 
 # ===== Cross-platform OAuth token resolution (from statusline.sh) =====
 # Tries credential sources in order: env var → macOS Keychain → Linux creds file → GNOME Keyring

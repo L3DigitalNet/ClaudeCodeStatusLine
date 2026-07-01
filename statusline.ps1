@@ -2,7 +2,7 @@
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
 $VERSION = "1.4.4"
-# Single line: Model | tokens | %used | %remain | think | 5h bar @reset | 7d bar @reset | extra
+# Single line: Model | effort | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
 
 # Read input from stdin
 $input = @($Input) -join "`n"
@@ -146,6 +146,17 @@ if (-not $cliVersion) {
 $out = ""
 $out += "${blue}${modelName}${reset}"
 
+# Effort — second from the left, immediately after the model block (no label)
+$out += " ${dim}|${reset} "
+switch ($effortLevel) {
+    "low"    { $out += "${dim}${effortLevel}${reset}" }
+    "medium" { $out += "${orange}med${reset}" }
+    "high"   { $out += "${green}${effortLevel}${reset}" }
+    "xhigh"  { $out += "${purple}${effortLevel}${reset}" }
+    "max"    { $out += "${red}${effortLevel}${reset}" }
+    default  { $out += "${green}${effortLevel}${reset}" }
+}
+
 # Current working directory
 $cwd = $data.cwd
 if ($cwd) {
@@ -177,16 +188,6 @@ if ($cwd) {
 
 $out += " ${dim}|${reset} "
 $out += "${orange}${usedTokens}/${totalTokens}${reset} ${dim}(${reset}${green}${pctUsed}%${reset}${dim})${reset}"
-$out += " ${dim}|${reset} "
-$out += "effort: "
-switch ($effortLevel) {
-    "low"    { $out += "${dim}${effortLevel}${reset}" }
-    "medium" { $out += "${orange}med${reset}" }
-    "high"   { $out += "${green}${effortLevel}${reset}" }
-    "xhigh"  { $out += "${purple}${effortLevel}${reset}" }
-    "max"    { $out += "${red}${effortLevel}${reset}" }
-    default  { $out += "${green}${effortLevel}${reset}" }
-}
 
 # ===== OAuth token resolution =====
 function Get-OAuthToken {
