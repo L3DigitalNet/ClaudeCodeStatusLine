@@ -1,8 +1,9 @@
 #!/bin/bash
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
-# Single line: Model | effort[✦thinking] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
-# The ✦ after the effort word appears only when thinking.enabled is true; the rest render unconditionally.
+# Single line: Model effort[✦thinking] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
+# Model and effort are joined by a plain space (no ' | ' between them); every other block keeps its ' | '
+# separator. The ✦ after the effort word appears only when thinking.enabled is true.
 
 set -f  # disable globbing
 VERSION="1.4.4"
@@ -153,9 +154,9 @@ fi
 out=""
 out+="${blue}${model_name}${reset}"
 
-# Effort — second from the left, immediately after the model block (no label).
-# A trailing ✦ marks extended thinking being enabled (orthogonal to the effort level).
-out+=" ${dim}|${reset} "
+# Effort — second from the left, joined to the model block by a plain space (no ' | '
+# separator). A trailing ✦ marks extended thinking being enabled (orthogonal to the level).
+out+=" "
 case "$effort_level" in
     low)    out+="${dim}${effort_level}${reset}" ;;
     medium) out+="${orange}med${reset}" ;;

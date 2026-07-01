@@ -2,8 +2,9 @@
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
 $VERSION = "1.4.4"
-# Single line: Model | effort[✦thinking] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
-# The ✦ after the effort word appears only when thinking.enabled is true; the rest render unconditionally.
+# Single line: Model effort[✦thinking] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
+# Model and effort are joined by a plain space (no ' | ' between them); every other block keeps its ' | '
+# separator. The ✦ after the effort word appears only when thinking.enabled is true.
 
 # Read input from stdin
 $input = @($Input) -join "`n"
@@ -161,9 +162,9 @@ if (-not $cliVersion) {
 $out = ""
 $out += "${blue}${modelName}${reset}"
 
-# Effort — second from the left, immediately after the model block (no label).
-# A trailing ✦ marks extended thinking being enabled (orthogonal to the effort level).
-$out += " ${dim}|${reset} "
+# Effort — second from the left, joined to the model block by a plain space (no ' | '
+# separator). A trailing ✦ marks extended thinking being enabled (orthogonal to the level).
+$out += " "
 switch ($effortLevel) {
     "low"    { $out += "${dim}${effortLevel}${reset}" }
     "medium" { $out += "${orange}med${reset}" }
