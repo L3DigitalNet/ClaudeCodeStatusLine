@@ -1,9 +1,7 @@
 #!/bin/bash
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
-# Single line: [session] | Model | effort[✦thinking] | [style] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | [$cost] | version
-# Bracketed blocks are conditional: they render only when Claude Code supplies the field (session_name,
-# output_style != default, thinking.enabled, cost.total_cost_usd > 0), so the line stays compact otherwise.
+# Single line: Model | effort | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
 
 set -f  # disable globbing
 VERSION="1.4.4"
@@ -119,12 +117,6 @@ elif [ -f "$settings_path" ]; then
 fi
 [ -z "$effort_level" ] && effort_level="medium"
 
-# Modernization fields (all optional — rendered only when present/meaningful below)
-session_name=$(echo "$input" | jq -r '.session_name // empty')
-output_style=$(echo "$input" | jq -r '.output_style.name // empty')
-thinking_enabled=$(echo "$input" | jq -r '.thinking.enabled // empty')
-cost_usd=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
-
 # ===== Claude CLI version =====
 # Prefer the version Claude Code passes on stdin (the exact running client) — no subprocess.
 # Fall back to the cached `claude --version` shell-out (1h TTL) only when stdin omits it
@@ -155,13 +147,9 @@ fi
 
 # ===== Build single-line output =====
 out=""
-# Session name — leftmost, before the model, only when Claude Code names the session.
-# It carries its own trailing separator so the model block still follows cleanly.
-[ -n "$session_name" ] && out+="${white}${session_name}${reset} ${dim}|${reset} "
 out+="${blue}${model_name}${reset}"
 
-# Effort — second from the left, immediately after the model block (no label).
-# A trailing ✦ marks extended thinking being enabled (orthogonal to the effort level).
+# Effort — second from the left, immediately after the model block (no label)
 out+=" ${dim}|${reset} "
 case "$effort_level" in
     low)    out+="${dim}${effort_level}${reset}" ;;
@@ -171,12 +159,6 @@ case "$effort_level" in
     max)    out+="${red}${effort_level}${reset}" ;;
     *)      out+="${green}${effort_level}${reset}" ;;
 esac
-[ "$thinking_enabled" = "true" ] && out+="${purple}✦${reset}"
-
-# Output style — after effort, only when set and not the default (keeps the common case clean).
-if [ -n "$output_style" ] && [ "$output_style" != "default" ]; then
-    out+=" ${dim}|${reset} ${cyan}${output_style}${reset}"
-fi
 
 # Current working directory. Prefer workspace.current_dir (the documented-preferred alias);
 # fall back to the top-level .cwd for older CLIs. Same value — no visual change.
@@ -558,16 +540,6 @@ if [ "${STATUSLINE_CHECK_UPDATES:-true}" != "false" ]; then
         if [ -n "$latest_tag" ] && version_gt "$latest_tag" "$VERSION"; then
             update_line="\n${dim}Update available: ${latest_tag} → Tell Claude: \"Find my installed status bar and update it\"${reset}"
         fi
-    fi
-fi
-
-# Session cost — just before the version, only once some spend has accrued. Formatted to
-# 2dp; hidden while still $0.00 so fresh sessions stay clean. The bare '$' is distinct from
-# the 'extra $x/$y' block by both position (end of line) and its single-figure shape.
-if [ -n "$cost_usd" ]; then
-    cost_fmt=$(echo "$cost_usd" | LC_NUMERIC=C awk '{printf "%.2f", $1}')
-    if [ -n "$cost_fmt" ] && [ "$cost_fmt" != "0.00" ]; then
-        out+=" ${dim}|${reset} ${green}\$${cost_fmt}${reset}"
     fi
 fi
 

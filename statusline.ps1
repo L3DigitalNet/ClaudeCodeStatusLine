@@ -2,9 +2,7 @@
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
 $VERSION = "1.4.4"
-# Single line: [session] | Model | effort[✦thinking] | [style] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | [$cost] | version
-# Bracketed blocks are conditional: they render only when Claude Code supplies the field (session_name,
-# output_style != default, thinking.enabled, cost.total_cost_usd > 0), so the line stays compact otherwise.
+# Single line: Model | effort | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
 
 # Read input from stdin
 $input = @($Input) -join "`n"
@@ -122,12 +120,6 @@ if ($data.effort.level) {
 }
 if (-not $effortLevel) { $effortLevel = "medium" }
 
-# Modernization fields (all optional — rendered only when present/meaningful below)
-$sessionName = $data.session_name
-$outputStyle = $data.output_style.name
-$thinkingEnabled = $data.thinking.enabled
-$costUsd = $data.cost.total_cost_usd
-
 # ===== Claude CLI version =====
 # Prefer the version Claude Code passes on stdin (the exact running client) — no subprocess.
 # Fall back to the cached `claude --version` shell-out (1h TTL) only when stdin omits it
@@ -163,13 +155,9 @@ if (-not $cliVersion) {
 
 # ===== Build single-line output =====
 $out = ""
-# Session name — leftmost, before the model, only when Claude Code names the session.
-# It carries its own trailing separator so the model block still follows cleanly.
-if ($sessionName) { $out += "${white}${sessionName}${reset} ${dim}|${reset} " }
 $out += "${blue}${modelName}${reset}"
 
-# Effort — second from the left, immediately after the model block (no label).
-# A trailing ✦ marks extended thinking being enabled (orthogonal to the effort level).
+# Effort — second from the left, immediately after the model block (no label)
 $out += " ${dim}|${reset} "
 switch ($effortLevel) {
     "low"    { $out += "${dim}${effortLevel}${reset}" }
@@ -178,12 +166,6 @@ switch ($effortLevel) {
     "xhigh"  { $out += "${purple}${effortLevel}${reset}" }
     "max"    { $out += "${red}${effortLevel}${reset}" }
     default  { $out += "${green}${effortLevel}${reset}" }
-}
-if ($thinkingEnabled -eq $true) { $out += "${purple}✦${reset}" }
-
-# Output style — after effort, only when set and not the default (keeps the common case clean).
-if ($outputStyle -and $outputStyle -ne "default") {
-    $out += " ${dim}|${reset} ${cyan}${outputStyle}${reset}"
 }
 
 # Current working directory. Prefer workspace.current_dir (the documented-preferred alias);
@@ -536,19 +518,6 @@ if ($env:STATUSLINE_CHECK_UPDATES -ne "false") {
                 $updateLine = "`n${dim}Update available: ${latestTag} → Tell Claude: `"Find my installed status bar and update it`"${reset}"
             }
         } catch {}
-    }
-}
-
-# Session cost — just before the version, only once some spend has accrued. Formatted to
-# 2dp; hidden while still $0.00 so fresh sessions stay clean. The bare '$' is distinct from
-# the 'extra $x/$y' block by both position (end of line) and its single-figure shape.
-if ($null -ne $costUsd) {
-    $costNum = 0.0
-    if ([double]::TryParse([string]$costUsd, [ref]$costNum)) {
-        $costFmt = "{0:F2}" -f $costNum
-        if ($costFmt -ne "0.00") {
-            $out += " ${dim}|${reset} ${green}`$${costFmt}${reset}"
-        }
     }
 }
 
