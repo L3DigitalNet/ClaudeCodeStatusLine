@@ -349,8 +349,12 @@ function Format-ExtraUsage($usage) {
         $usedRaw = $usage.extra_usage.used_credits
         $limitRaw = $usage.extra_usage.monthly_limit
 
+        # Hide the block entirely until some extra usage has been spent this month.
+        # It reappears automatically once used_credits > 0 (i.e. $used is no longer 0.00).
+        $used = "{0:F2}" -f ([double](Coalesce $usedRaw 0) / 100)
+        if ($used -eq "0.00") { return "" }
+
         if ($null -ne $usedRaw -and $null -ne $limitRaw) {
-            $used = "{0:F2}" -f ([double]$usedRaw / 100)
             $limit = "{0:F2}" -f ([double]$limitRaw / 100)
             $color = Get-UsageColor $pct
             return "${sep}${white}extra${reset} ${color}`$${used}/`$${limit}${reset}"

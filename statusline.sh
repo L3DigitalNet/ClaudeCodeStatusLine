@@ -387,6 +387,10 @@ render_extra_usage() {
     used=$(echo "$data" | jq -r '.extra_usage.used_credits // 0' | LC_NUMERIC=C awk '{printf "%.2f", $1/100}')
     limit=$(echo "$data" | jq -r '.extra_usage.monthly_limit // 0' | LC_NUMERIC=C awk '{printf "%.2f", $1/100}')
 
+    # Hide the block entirely until some extra usage has been spent this month.
+    # It reappears automatically once used_credits > 0 (i.e. $used is no longer 0.00).
+    [ "$used" = "0.00" ] && return
+
     if [ -n "$used" ] && [ -n "$limit" ] && [[ "$used" != *'$'* ]] && [[ "$limit" != *'$'* ]]; then
         local color
         color=$(usage_color "$pct")
