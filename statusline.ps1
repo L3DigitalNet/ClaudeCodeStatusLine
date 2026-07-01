@@ -29,18 +29,21 @@ $reset  = "${esc}[0m"
 
 # Format token counts (e.g., 50k / 200k)
 function Format-Tokens([long]$num) {
+    # Round half-up via AwayFromZero (.NET's default Round is banker's/half-to-even, which
+    # surprises readers: 2500 must render 3k, not 2k). Unit is chosen from the *rounded*
+    # value so 999500..999999 promote to 1M instead of an out-of-range "1000k". Suffixes
+    # follow SI casing — lowercase k, uppercase M — matching the model block's "1M".
     if ($num -ge 1000000) {
-        $val = [math]::Round($num / 1000000, 1)
-        if ([math]::Abs($val - [math]::Round($val)) -lt 0.05) { return "{0:F0}m" -f $val }
-        return "{0:F1}m" -f $val
+        $val = [math]::Round($num / 1000000.0, 1, [MidpointRounding]::AwayFromZero)
+        if ($val -eq [math]::Floor($val)) { return "{0:F0}M" -f $val }
+        return "{0:F1}M" -f $val
     }
-    elseif ($num -ge 1000) { return "{0:F0}k" -f ($num / 1000) }
+    elseif ($num -ge 1000) {
+        $k = [int][math]::Round($num / 1000.0, 0, [MidpointRounding]::AwayFromZero)
+        if ($k -ge 1000) { return "1M" }
+        return "${k}k"
+    }
     else { return "$num" }
-}
-
-# Format number with commas (e.g., 134,938)
-function Format-Commas([long]$num) {
-    return $num.ToString("N0")
 }
 
 # Return color escape based on usage percentage
@@ -91,11 +94,6 @@ if ($size -gt 0) {
 } else {
     $pctUsed = 0
 }
-$pctRemain = 100 - $pctUsed
-
-$usedComma   = Format-Commas $current
-$remainComma = Format-Commas ($size - $current)
-
 # Config directory (respects CLAUDE_CONFIG_DIR override)
 $claudeConfigDir = if ($env:CLAUDE_CONFIG_DIR) { $env:CLAUDE_CONFIG_DIR } else { Join-Path $env:USERPROFILE ".claude" }
 
@@ -345,17 +343,24 @@ function Format-ExtraUsage($usage) {
         $enabled = $usage.extra_usage.is_enabled
         if ($enabled -ne $true) { return "" }
 
-        $pct = [math]::Floor([double](Coalesce $usage.extra_usage.utilization 0))
         $usedRaw = $usage.extra_usage.used_credits
         $limitRaw = $usage.extra_usage.monthly_limit
 
-        # Hide the block entirely until some extra usage has been spent this month.
-        # It reappears automatically once used_credits > 0 (i.e. $used is no longer 0.00).
-        $used = "{0:F2}" -f ([double](Coalesce $usedRaw 0) / 100)
-        if ($used -eq "0.00") { return "" }
+        # Show dollar figures only when both credit values are numeric. When they are absent
+        # or malformed, fall back to a plain "enabled" marker rather than silently rendering
+        # nothing. (This 'else' branch was previously unreachable.)
+        $usedNum = 0.0
+        $limitNum = 0.0
+        if ([double]::TryParse([string]$usedRaw, [ref]$usedNum) -and
+            [double]::TryParse([string]$limitRaw, [ref]$limitNum)) {
+            $used = "{0:F2}" -f ($usedNum / 100)
 
-        if ($null -ne $usedRaw -and $null -ne $limitRaw) {
-            $limit = "{0:F2}" -f ([double]$limitRaw / 100)
+            # Hide the block entirely until some extra usage has been spent this month.
+            # It reappears automatically once used_credits > 0 (i.e. $used is no longer 0.00).
+            if ($used -eq "0.00") { return "" }
+
+            $limit = "{0:F2}" -f ($limitNum / 100)
+            $pct = [math]::Floor([double](Coalesce $usage.extra_usage.utilization 0))
             $color = Get-UsageColor $pct
             return "${sep}${white}extra${reset} ${color}`$${used}/`$${limit}${reset}"
         } else {

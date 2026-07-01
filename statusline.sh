@@ -27,19 +27,22 @@ reset='\033[0m'
 
 # Format token counts (e.g., 50k / 200k)
 format_tokens() {
-    local num=$1
-    if [ "$num" -ge 1000000 ]; then
-        awk "BEGIN {v=sprintf(\"%.1f\",$num/1000000)+0; if(v==int(v)) printf \"%dm\",v; else printf \"%.1fm\",v}"
-    elif [ "$num" -ge 1000 ]; then
-        awk "BEGIN {printf \"%.0fk\", $num / 1000}"
-    else
-        printf "%d" "$num"
-    fi
-}
-
-# Format number with commas (e.g., 134,938)
-format_commas() {
-    printf "%'d" "$1"
+    # Round half-up (awk's default %.0f/%.1f is round-half-to-even, which surprises
+    # readers: 2500 must render 3k, not 2k). Unit is chosen from the *rounded* value so
+    # 999500..999999 promote to 1M instead of an out-of-range "1000k". Suffixes follow SI
+    # casing — lowercase k, uppercase M — matching the model block's "1M".
+    awk -v n="$1" 'BEGIN {
+        if (n >= 1000000) {
+            v = int(n / 100000 + 0.5) / 10          # millions, 1 decimal, half-up
+            if (v == int(v)) printf "%dM", v; else printf "%.1fM", v
+        } else if (n >= 1000) {
+            k = int(n / 1000 + 0.5)                 # thousands, integer, half-up
+            if (k >= 1000) printf "1M"              # rounded up out of the k range
+            else printf "%dk", k
+        } else {
+            printf "%d", n
+        }
+    }'
 }
 
 # Return color escape based on usage percentage
@@ -93,11 +96,6 @@ if [ "$size" -gt 0 ]; then
 else
     pct_used=0
 fi
-pct_remain=$(( 100 - pct_used ))
-
-used_comma=$(format_commas $current)
-remain_comma=$(format_commas $(( size - current )))
-
 settings_path="$claude_config_dir/settings.json"
 effort_level=""
 stdin_effort=$(echo "$input" | jq -r '.effort.level // empty' 2>/dev/null)
@@ -382,17 +380,23 @@ render_extra_usage() {
     enabled=$(echo "$data" | jq -r '.extra_usage.is_enabled // false' 2>/dev/null)
     [ "$enabled" != "true" ] && return
 
-    local pct used limit
-    pct=$(echo "$data" | jq -r '.extra_usage.utilization // 0' | awk '{printf "%.0f", $1}')
-    used=$(echo "$data" | jq -r '.extra_usage.used_credits // 0' | LC_NUMERIC=C awk '{printf "%.2f", $1/100}')
-    limit=$(echo "$data" | jq -r '.extra_usage.monthly_limit // 0' | LC_NUMERIC=C awk '{printf "%.2f", $1/100}')
+    local pct raw_used raw_limit used limit color
+    raw_used=$(echo "$data" | jq -r '.extra_usage.used_credits // empty')
+    raw_limit=$(echo "$data" | jq -r '.extra_usage.monthly_limit // empty')
 
-    # Hide the block entirely until some extra usage has been spent this month.
-    # It reappears automatically once used_credits > 0 (i.e. $used is no longer 0.00).
-    [ "$used" = "0.00" ] && return
+    # Show dollar figures only when both credit values are numeric. When they are absent or
+    # malformed, fall back to a plain "enabled" marker rather than silently rendering
+    # nothing — awk would otherwise coerce garbage to 0.00 and the block would vanish as if
+    # unused. (This 'else' branch was previously unreachable.)
+    if [[ "$raw_used" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ "$raw_limit" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+        used=$(echo "$raw_used" | LC_NUMERIC=C awk '{printf "%.2f", $1/100}')
+        limit=$(echo "$raw_limit" | LC_NUMERIC=C awk '{printf "%.2f", $1/100}')
 
-    if [ -n "$used" ] && [ -n "$limit" ] && [[ "$used" != *'$'* ]] && [[ "$limit" != *'$'* ]]; then
-        local color
+        # Hide the block entirely until some extra usage has been spent this month.
+        # It reappears automatically once used_credits > 0 (i.e. $used is no longer 0.00).
+        [ "$used" = "0.00" ] && return
+
+        pct=$(echo "$data" | jq -r '.extra_usage.utilization // 0' | awk '{printf "%.0f", $1}')
         color=$(usage_color "$pct")
         out+="${sep}${white}extra${reset} ${color}\$${used}/\$${limit}${reset}"
     else
