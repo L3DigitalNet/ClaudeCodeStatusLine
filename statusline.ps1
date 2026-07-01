@@ -2,7 +2,9 @@
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
 $VERSION = "1.4.4"
-# Single line: Model | effort | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
+# Single line: [session] | Model | effort[✦thinking] | [style] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | [$cost] | version
+# Bracketed blocks are conditional: they render only when Claude Code supplies the field (session_name,
+# output_style != default, thinking.enabled, cost.total_cost_usd > 0), so the line stays compact otherwise.
 
 # Read input from stdin
 $input = @($Input) -join "`n"
@@ -120,38 +122,54 @@ if ($data.effort.level) {
 }
 if (-not $effortLevel) { $effortLevel = "medium" }
 
-# ===== Claude CLI version (cached, 1h TTL) =====
-$cacheDir = Join-Path $env:TEMP "claude"
-$cliVersionCache = Join-Path $cacheDir "statusline-cli-version"
-$cliVersion = $null
-$cliVersionMaxAge = 3600
+# Modernization fields (all optional — rendered only when present/meaningful below)
+$sessionName = $data.session_name
+$outputStyle = $data.output_style.name
+$thinkingEnabled = $data.thinking.enabled
+$costUsd = $data.cost.total_cost_usd
 
-if (Test-Path $cliVersionCache) {
-    $cvMtime = (Get-Item $cliVersionCache).LastWriteTime
-    $cvAge = ((Get-Date) - $cvMtime).TotalSeconds
-    if ($cvAge -lt $cliVersionMaxAge) {
-        $cliVersion = (Get-Content $cliVersionCache -Raw).Trim()
-    }
-}
+# ===== Claude CLI version =====
+# Prefer the version Claude Code passes on stdin (the exact running client) — no subprocess.
+# Fall back to the cached `claude --version` shell-out (1h TTL) only when stdin omits it
+# (older CLIs / manual invocation), preserving graceful degradation.
+$cacheDir = Join-Path $env:TEMP "claude"
+$cliVersion = if ($data.version) { [string]$data.version } else { $null }
 
 if (-not $cliVersion) {
-    try {
-        $cvOutput = & claude --version 2>$null
-        if ($cvOutput) {
-            $cliVersion = ($cvOutput -split '\s')[0]
-            if ($cliVersion) {
-                if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
-                $cliVersion | Set-Content $cliVersionCache -Force
-            }
+    $cliVersionCache = Join-Path $cacheDir "statusline-cli-version"
+    $cliVersionMaxAge = 3600
+
+    if (Test-Path $cliVersionCache) {
+        $cvMtime = (Get-Item $cliVersionCache).LastWriteTime
+        $cvAge = ((Get-Date) - $cvMtime).TotalSeconds
+        if ($cvAge -lt $cliVersionMaxAge) {
+            $cliVersion = (Get-Content $cliVersionCache -Raw).Trim()
         }
-    } catch {}
+    }
+
+    if (-not $cliVersion) {
+        try {
+            $cvOutput = & claude --version 2>$null
+            if ($cvOutput) {
+                $cliVersion = ($cvOutput -split '\s')[0]
+                if ($cliVersion) {
+                    if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
+                    $cliVersion | Set-Content $cliVersionCache -Force
+                }
+            }
+        } catch {}
+    }
 }
 
 # ===== Build single-line output =====
 $out = ""
+# Session name — leftmost, before the model, only when Claude Code names the session.
+# It carries its own trailing separator so the model block still follows cleanly.
+if ($sessionName) { $out += "${white}${sessionName}${reset} ${dim}|${reset} " }
 $out += "${blue}${modelName}${reset}"
 
-# Effort — second from the left, immediately after the model block (no label)
+# Effort — second from the left, immediately after the model block (no label).
+# A trailing ✦ marks extended thinking being enabled (orthogonal to the effort level).
 $out += " ${dim}|${reset} "
 switch ($effortLevel) {
     "low"    { $out += "${dim}${effortLevel}${reset}" }
@@ -161,9 +179,16 @@ switch ($effortLevel) {
     "max"    { $out += "${red}${effortLevel}${reset}" }
     default  { $out += "${green}${effortLevel}${reset}" }
 }
+if ($thinkingEnabled -eq $true) { $out += "${purple}✦${reset}" }
 
-# Current working directory
-$cwd = $data.cwd
+# Output style — after effort, only when set and not the default (keeps the common case clean).
+if ($outputStyle -and $outputStyle -ne "default") {
+    $out += " ${dim}|${reset} ${cyan}${outputStyle}${reset}"
+}
+
+# Current working directory. Prefer workspace.current_dir (the documented-preferred alias);
+# fall back to the top-level .cwd for older CLIs. Same value — no visual change.
+$cwd = if ($data.workspace.current_dir) { $data.workspace.current_dir } else { $data.cwd }
 if ($cwd) {
     $displayDir = Split-Path $cwd -Leaf
     $gitBranch = $null
@@ -511,6 +536,19 @@ if ($env:STATUSLINE_CHECK_UPDATES -ne "false") {
                 $updateLine = "`n${dim}Update available: ${latestTag} → Tell Claude: `"Find my installed status bar and update it`"${reset}"
             }
         } catch {}
+    }
+}
+
+# Session cost — just before the version, only once some spend has accrued. Formatted to
+# 2dp; hidden while still $0.00 so fresh sessions stay clean. The bare '$' is distinct from
+# the 'extra $x/$y' block by both position (end of line) and its single-figure shape.
+if ($null -ne $costUsd) {
+    $costNum = 0.0
+    if ([double]::TryParse([string]$costUsd, [ref]$costNum)) {
+        $costFmt = "{0:F2}" -f $costNum
+        if ($costFmt -ne "0.00") {
+            $out += " ${dim}|${reset} ${green}`$${costFmt}${reset}"
+        }
     }
 }
 

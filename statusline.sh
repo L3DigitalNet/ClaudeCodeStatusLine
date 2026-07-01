@@ -1,7 +1,9 @@
 #!/bin/bash
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
-# Single line: Model | effort | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
+# Single line: [session] | Model | effort[✦thinking] | [style] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | [$cost] | version
+# Bracketed blocks are conditional: they render only when Claude Code supplies the field (session_name,
+# output_style != default, thinking.enabled, cost.total_cost_usd > 0), so the line stays compact otherwise.
 
 set -f  # disable globbing
 VERSION="1.4.4"
@@ -117,33 +119,49 @@ elif [ -f "$settings_path" ]; then
 fi
 [ -z "$effort_level" ] && effort_level="medium"
 
-# ===== Claude CLI version (cached, 1h TTL) =====
-cli_version_cache="/tmp/claude/statusline-cli-version"
-cli_version=""
-cli_version_max_age=3600
+# Modernization fields (all optional — rendered only when present/meaningful below)
+session_name=$(echo "$input" | jq -r '.session_name // empty')
+output_style=$(echo "$input" | jq -r '.output_style.name // empty')
+thinking_enabled=$(echo "$input" | jq -r '.thinking.enabled // empty')
+cost_usd=$(echo "$input" | jq -r '.cost.total_cost_usd // empty')
 
-if [ -f "$cli_version_cache" ]; then
-    cv_mtime=$(stat -c %Y "$cli_version_cache" 2>/dev/null || stat -f %m "$cli_version_cache" 2>/dev/null)
-    cv_now=$(date +%s)
-    cv_age=$(( cv_now - cv_mtime ))
-    if [ "$cv_age" -lt "$cli_version_max_age" ]; then
-        cli_version=$(cat "$cli_version_cache" 2>/dev/null)
-    fi
-fi
+# ===== Claude CLI version =====
+# Prefer the version Claude Code passes on stdin (the exact running client) — no subprocess.
+# Fall back to the cached `claude --version` shell-out (1h TTL) only when stdin omits it
+# (older CLIs / manual invocation), preserving graceful degradation.
+cli_version=$(echo "$input" | jq -r '.version // empty')
 
 if [ -z "$cli_version" ]; then
-    cli_version=$(claude --version 2>/dev/null | awk '{print $1}')
-    if [ -n "$cli_version" ]; then
-        mkdir -p /tmp/claude 2>/dev/null
-        echo "$cli_version" > "$cli_version_cache"
+    cli_version_cache="/tmp/claude/statusline-cli-version"
+    cli_version_max_age=3600
+
+    if [ -f "$cli_version_cache" ]; then
+        cv_mtime=$(stat -c %Y "$cli_version_cache" 2>/dev/null || stat -f %m "$cli_version_cache" 2>/dev/null)
+        cv_now=$(date +%s)
+        cv_age=$(( cv_now - cv_mtime ))
+        if [ "$cv_age" -lt "$cli_version_max_age" ]; then
+            cli_version=$(cat "$cli_version_cache" 2>/dev/null)
+        fi
+    fi
+
+    if [ -z "$cli_version" ]; then
+        cli_version=$(claude --version 2>/dev/null | awk '{print $1}')
+        if [ -n "$cli_version" ]; then
+            mkdir -p /tmp/claude 2>/dev/null
+            echo "$cli_version" > "$cli_version_cache"
+        fi
     fi
 fi
 
 # ===== Build single-line output =====
 out=""
+# Session name — leftmost, before the model, only when Claude Code names the session.
+# It carries its own trailing separator so the model block still follows cleanly.
+[ -n "$session_name" ] && out+="${white}${session_name}${reset} ${dim}|${reset} "
 out+="${blue}${model_name}${reset}"
 
-# Effort — second from the left, immediately after the model block (no label)
+# Effort — second from the left, immediately after the model block (no label).
+# A trailing ✦ marks extended thinking being enabled (orthogonal to the effort level).
 out+=" ${dim}|${reset} "
 case "$effort_level" in
     low)    out+="${dim}${effort_level}${reset}" ;;
@@ -153,9 +171,16 @@ case "$effort_level" in
     max)    out+="${red}${effort_level}${reset}" ;;
     *)      out+="${green}${effort_level}${reset}" ;;
 esac
+[ "$thinking_enabled" = "true" ] && out+="${purple}✦${reset}"
 
-# Current working directory
-cwd=$(echo "$input" | jq -r '.cwd // empty')
+# Output style — after effort, only when set and not the default (keeps the common case clean).
+if [ -n "$output_style" ] && [ "$output_style" != "default" ]; then
+    out+=" ${dim}|${reset} ${cyan}${output_style}${reset}"
+fi
+
+# Current working directory. Prefer workspace.current_dir (the documented-preferred alias);
+# fall back to the top-level .cwd for older CLIs. Same value — no visual change.
+cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // empty')
 if [ -n "$cwd" ]; then
     display_dir="${cwd##*/}"
     git_branch=$(git -C "${cwd}" rev-parse --abbrev-ref HEAD 2>/dev/null)
@@ -533,6 +558,16 @@ if [ "${STATUSLINE_CHECK_UPDATES:-true}" != "false" ]; then
         if [ -n "$latest_tag" ] && version_gt "$latest_tag" "$VERSION"; then
             update_line="\n${dim}Update available: ${latest_tag} → Tell Claude: \"Find my installed status bar and update it\"${reset}"
         fi
+    fi
+fi
+
+# Session cost — just before the version, only once some spend has accrued. Formatted to
+# 2dp; hidden while still $0.00 so fresh sessions stay clean. The bare '$' is distinct from
+# the 'extra $x/$y' block by both position (end of line) and its single-figure shape.
+if [ -n "$cost_usd" ]; then
+    cost_fmt=$(echo "$cost_usd" | LC_NUMERIC=C awk '{printf "%.2f", $1}')
+    if [ -n "$cost_fmt" ] && [ "$cost_fmt" != "0.00" ]; then
+        out+=" ${dim}|${reset} ${green}\$${cost_fmt}${reset}"
     fi
 fi
 
