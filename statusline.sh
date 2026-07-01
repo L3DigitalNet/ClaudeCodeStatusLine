@@ -91,7 +91,15 @@ current=$(( input_tokens + cache_create + cache_read ))
 used_tokens=$(format_tokens $current)
 total_tokens=$(format_tokens $size)
 
-if [ "$size" -gt 0 ]; then
+# Percent of context used. Claude Code now ships context_window.used_percentage
+# precomputed (input-only formula — excludes output_tokens — which matches our own
+# current sum). Prefer it; fall back to computing it ourselves for older CLIs or when
+# the field is absent (current_usage is null before the first API call / after /compact).
+# jq's `// empty` keeps a literal 0, so a real 0% is honored rather than mistaken for absent.
+pct_stdin=$(echo "$input" | jq -r '.context_window.used_percentage // empty')
+if [ -n "$pct_stdin" ] && [ "$pct_stdin" != "null" ]; then
+    pct_used=$(awk -v p="$pct_stdin" 'BEGIN { printf "%d", p }')  # floor to int, matching manual path
+elif [ "$size" -gt 0 ]; then
     pct_used=$(( current * 100 / size ))
 else
     pct_used=0
@@ -280,12 +288,21 @@ if $needs_refresh; then
     touch "$cache_file"  # stampede lock: prevent parallel panes from fetching simultaneously
     token=$(get_oauth_token)
     if [ -n "$token" ] && [ "$token" != "null" ]; then
+        # Present the real running client version so the usage endpoint applies its normal
+        # rate-limit bucket, not the aggressive one it reserves for atypical User-Agents.
+        # A hardcoded version silently rots (it had drifted 160+ releases); source it live
+        # instead — stdin .version is the exact client invoking us, then the cached CLI
+        # version. The literal is only a last resort for the (production-impossible) case
+        # where both live sources are empty; bump it if you ever see it in the wild.
+        client_version=$(echo "$input" | jq -r '.version // empty')
+        [ -z "$client_version" ] && client_version="$cli_version"
+        [ -z "$client_version" ] && client_version="2.1.197"
         response=$(curl -s --max-time 10 \
             -H "Accept: application/json" \
             -H "Content-Type: application/json" \
             -H "Authorization: Bearer $token" \
             -H "anthropic-beta: oauth-2025-04-20" \
-            -H "User-Agent: claude-code/2.1.34" \
+            -H "User-Agent: claude-code/${client_version}" \
             "https://api.anthropic.com/api/oauth/usage" 2>/dev/null)
         # Only cache valid usage responses (not error/rate-limit JSON)
         if [ -n "$response" ] && echo "$response" | jq -e '.five_hour' >/dev/null 2>&1; then

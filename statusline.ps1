@@ -89,7 +89,14 @@ $current = $inputTokens + $cacheCreate + $cacheRead
 $usedTokens  = Format-Tokens $current
 $totalTokens = Format-Tokens $size
 
-if ($size -gt 0) {
+# Percent of context used. Claude Code now ships context_window.used_percentage
+# precomputed (input-only formula — excludes output_tokens — which matches our own
+# current sum). Prefer it; fall back to computing it ourselves for older CLIs or when
+# the field is absent (current_usage is null before the first API call / after /compact).
+# A literal 0 is a real value here, so honor it rather than treating it as absent.
+if ($null -ne $data.context_window.used_percentage) {
+    $pctUsed = [math]::Floor([double]$data.context_window.used_percentage)
+} elseif ($size -gt 0) {
     $pctUsed = [math]::Floor($current * 100 / $size)
 } else {
     $pctUsed = 0
@@ -283,12 +290,18 @@ if ($needsRefresh) {
     $token = Get-OAuthToken
     if ($token) {
         try {
+            # Present the real running client version so the usage endpoint applies its normal
+            # rate-limit bucket, not the aggressive one it reserves for atypical User-Agents.
+            # A hardcoded version silently rots (it had drifted 160+ releases); source it live —
+            # stdin .version is the exact client invoking us, then the cached CLI version. The
+            # literal is only a last resort for the (production-impossible) both-empty case.
+            $clientVersion = if ($data.version) { [string]$data.version } elseif ($cliVersion) { $cliVersion } else { "2.1.197" }
             $headers = @{
                 "Accept"         = "application/json"
                 "Content-Type"   = "application/json"
                 "Authorization"  = "Bearer $token"
                 "anthropic-beta" = "oauth-2025-04-20"
-                "User-Agent"     = "claude-code/2.1.34"
+                "User-Agent"     = "claude-code/$clientVersion"
             }
             $response = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" `
                 -Headers $headers -Method Get -TimeoutSec 10 -ErrorAction Stop
