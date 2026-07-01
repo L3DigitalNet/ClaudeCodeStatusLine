@@ -1,4 +1,5 @@
-# Source: https://github.com/daniel3303/ClaudeCodeStatusLine
+# Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
+# Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
 $VERSION = "1.4.4"
 # Single line: Model | tokens | %used | %remain | think | 5h bar @reset | 7d bar @reset | extra
@@ -468,7 +469,7 @@ if ($env:STATUSLINE_CHECK_UPDATES -ne "false") {
             New-Item -ItemType File -Path $versionCacheFile -Force | Out-Null
         }
         try {
-            $vcResponse = Invoke-RestMethod -Uri "https://api.github.com/repos/daniel3303/ClaudeCodeStatusLine/releases/latest" `
+            $vcResponse = Invoke-RestMethod -Uri "https://api.github.com/repos/chrisdpurcell/ClaudeCodeStatusLine/releases/latest" `
                 -Headers @{ "Accept" = "application/vnd.github+json" } -Method Get -TimeoutSec 5 -ErrorAction Stop
             $versionData = $vcResponse | ConvertTo-Json -Depth 10
             $versionData | Set-Content $versionCacheFile -Force

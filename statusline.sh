@@ -1,5 +1,6 @@
 #!/bin/bash
-# Source: https://github.com/daniel3303/ClaudeCodeStatusLine
+# Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
+# Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 # Single line: Model | tokens | %used | %remain | think | 5h bar @reset | 7d bar @reset | extra
 
 set -f  # disable globbing
@@ -492,7 +493,7 @@ if [ "${STATUSLINE_CHECK_UPDATES:-true}" != "false" ]; then
         touch "$version_cache_file" 2>/dev/null
         vc_response=$(curl -s --max-time 5 \
             -H "Accept: application/vnd.github+json" \
-            "https://api.github.com/repos/daniel3303/ClaudeCodeStatusLine/releases/latest" 2>/dev/null)
+            "https://api.github.com/repos/chrisdpurcell/ClaudeCodeStatusLine/releases/latest" 2>/dev/null)
         if [ -n "$vc_response" ] && echo "$vc_response" | jq -e '.tag_name' >/dev/null 2>&1; then
             version_data="$vc_response"
             echo "$vc_response" > "$version_cache_file"

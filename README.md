@@ -25,7 +25,7 @@ Usage percentages are color-coded: green (<50%) → yellow (≥50%) → orange (
 
 Ask Claude Code:
 
-> Clone https://github.com/daniel3303/ClaudeCodeStatusLine to `~/.claude/statusline/` (or `%USERPROFILE%\.claude\statusline\` on Windows) and configure it as my status bar by following its INSTALL.md.
+> Clone https://github.com/chrisdpurcell/ClaudeCodeStatusLine to `~/.claude/statusline/` (or `%USERPROFILE%\.claude\statusline\` on Windows) and configure it as my status bar by following its INSTALL.md.
 
 Claude will clone the repo to that path, pick the right script for your OS, and update `settings.json`. Full step-by-step instructions Claude follows live in [INSTALL.md](INSTALL.md).
 
@@ -68,11 +68,11 @@ export STATUSLINE_CHECK_UPDATES=false
 
 ## License
 
-MIT
+MIT — see [LICENSE](LICENSE).
 
-## Author
+## Credits
 
-Daniel Oliveira
+Originally created by **Daniel Oliveira** ([@daniel3303](https://github.com/daniel3303/ClaudeCodeStatusLine)). This repository is an independent continuation, now maintained by **Chris Purcell** ([@chrisdpurcell](https://github.com/chrisdpurcell)). Thanks to Daniel for the original work.
 
 [![Website](https://img.shields.io/badge/Website-FF6B6B?style=for-the-badge&logo=safari&logoColor=white)](https://danielapoliveira.com/)
 [![X](https://img.shields.io/badge/X-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/daniel_not_nerd)

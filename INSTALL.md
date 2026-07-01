@@ -14,14 +14,14 @@ Clone to `~/.claude/statusline/` on Unix, or `%USERPROFILE%\.claude\statusline\`
 **macOS / Linux**
 
 ```bash
-git clone https://github.com/daniel3303/ClaudeCodeStatusLine ~/.claude/statusline
+git clone https://github.com/chrisdpurcell/ClaudeCodeStatusLine ~/.claude/statusline
 chmod +x ~/.claude/statusline/statusline.sh
 ```
 
 **Windows (PowerShell)**
 
 ```powershell
-git clone https://github.com/daniel3303/ClaudeCodeStatusLine "$env:USERPROFILE\.claude\statusline"
+git clone https://github.com/chrisdpurcell/ClaudeCodeStatusLine "$env:USERPROFILE\.claude\statusline"
 ```
 
 ## 3. Configure `settings.json`
