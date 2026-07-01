@@ -2,7 +2,8 @@
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
 $VERSION = "1.4.4"
-# Single line: Model | effort | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
+# Single line: Model | effort[✦thinking] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
+# The ✦ after the effort word appears only when thinking.enabled is true; the rest render unconditionally.
 
 # Read input from stdin
 $input = @($Input) -join "`n"
@@ -120,6 +121,9 @@ if ($data.effort.level) {
 }
 if (-not $effortLevel) { $effortLevel = "medium" }
 
+# Extended-thinking flag — drives the ✦ marker fused onto the effort word below.
+$thinkingEnabled = $data.thinking.enabled
+
 # ===== Claude CLI version =====
 # Prefer the version Claude Code passes on stdin (the exact running client) — no subprocess.
 # Fall back to the cached `claude --version` shell-out (1h TTL) only when stdin omits it
@@ -157,7 +161,8 @@ if (-not $cliVersion) {
 $out = ""
 $out += "${blue}${modelName}${reset}"
 
-# Effort — second from the left, immediately after the model block (no label)
+# Effort — second from the left, immediately after the model block (no label).
+# A trailing ✦ marks extended thinking being enabled (orthogonal to the effort level).
 $out += " ${dim}|${reset} "
 switch ($effortLevel) {
     "low"    { $out += "${dim}${effortLevel}${reset}" }
@@ -167,6 +172,7 @@ switch ($effortLevel) {
     "max"    { $out += "${red}${effortLevel}${reset}" }
     default  { $out += "${green}${effortLevel}${reset}" }
 }
+if ($thinkingEnabled -eq $true) { $out += "${purple}✦${reset}" }
 
 # Current working directory. Prefer workspace.current_dir (the documented-preferred alias);
 # fall back to the top-level .cwd for older CLIs. Same value — no visual change.
