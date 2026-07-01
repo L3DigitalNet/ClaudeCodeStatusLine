@@ -8,6 +8,25 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both implementations — `statusline.sh` (Bash) and `statusline.ps1` (PowerShell) — are
 functional mirrors; every entry below applies to both unless noted.
 
+## [1.5.1] - 2026-07-01
+
+A follow-up review pass on 1.5.0 that closes remaining parity gaps between the two mirrors and fixes a cache-staleness bug found in the review.
+
+### Changed
+- **5-hour reset time (Bash):** the built-in 5-hour reset time now tries GNU `date` before BSD `date`, matching the other date paths in the script and avoiding a failed exec per render on Linux.
+
+### Fixed
+- **Update-check flag matching (PowerShell):** `STATUSLINE_CHECK_UPDATES=false` matching is now case-sensitive (`-cne`), mirroring Bash's exact-string comparison. Previously `FALSE` or `False` also disabled the update check, but only on Windows.
+- **Extra-usage staleness (both):** the built-in `rate_limits` path rewrote the usage cache on every render, which kept resetting the 60-second fetch throttle (mtime-based) without an actual fetch happening, starving the OAuth usage fetch that is the only source of `extra_usage` and leaving the figure frozen during active use. The throttle now lives in a separate fetch-stamp file (`statusline-usage-fetched-<hash>`), touched only by real fetch attempts.
+- **Model-name context suffix (Bash, parity):** the `(… context)` normalizer now requires digits plus a `k`/`M` suffix and trims whitespace before collapsing it, matching PowerShell. `(200000 context)` (no unit suffix) is now left verbatim in both mirrors instead of being collapsed by Bash alone.
+- **Invariant-culture gaps (PowerShell):** the built-in-path cache's ISO timestamp writes and `[DateTimeOffset]::Parse` now use `InvariantCulture`, so a non-Gregorian default calendar (e.g. `ar-SA`) no longer misformats the timestamp or throws on parse. The effort word is now lowercased with `ToLowerInvariant()` instead of `ToLower()`, closing a Turkish-I mismatch under `tr-TR`.
+- **Empty CLI-version cache (PowerShell):** an empty cache file no longer raises a null-method error.
+- **Version comparison padding (PowerShell, parity):** single-component release tags are padded before comparison (`v2` → `2.0`), so both mirrors agree on non-three-part release tags.
+
+### Security
+- **Cache location (Bash):** caches moved from the fixed, world-visible `/tmp/claude` to `${XDG_RUNTIME_DIR:-/tmp}/claude` (per-user and mode `0700` on systemd distros, falling back to `/tmp` elsewhere; macOS unchanged, and PowerShell already used the per-user `%TEMP%`).
+- **Release-tag sanitization (both):** the update-check release tag is stripped to version characters (`v`, digits, dots) before rendering, so a poisoned version cache can no longer inject terminal escape sequences via `tag_name`.
+
 ## [1.5.0] - 2026-07-01
 
 Modernization to the current Claude Code stdin schema, plus a comprehensive review that

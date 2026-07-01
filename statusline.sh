@@ -6,7 +6,7 @@
 # separator. The ✦ after the effort word appears only when thinking.enabled is true.
 
 set -f  # disable globbing
-VERSION="1.5.0"
+VERSION="1.5.1"
 
 input=$(cat)
 
@@ -73,6 +73,12 @@ usage_color() {
 # Resolve config directory: CLAUDE_CONFIG_DIR (set by alias) or default ~/.claude
 claude_config_dir="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 
+# Cache root for all on-disk caches (CLI version, usage, update check). Prefer the
+# per-user, 0700 XDG_RUNTIME_DIR (systemd distros) over a fixed /tmp/claude: /tmp is
+# world-visible, so on a shared host another local user could pre-create or poison
+# that path. Fall back to /tmp for macOS / older systems that lack XDG_RUNTIME_DIR.
+cache_dir="${XDG_RUNTIME_DIR:-/tmp}/claude"
+
 # Return 0 (true) if $1 > $2 using semantic versioning
 version_gt() {
     local a="${1#v}" b="${2#v}"
@@ -90,7 +96,10 @@ version_gt() {
 }
 # ===== Extract data from JSON =====
 model_name=$(echo "$input" | jq -r '.model.display_name // "Claude"')
-model_name=$(echo "$model_name" | sed 's/ *(\([0-9.]*[kKmM]*\) context)/ \1/')  # "(1M context)" → "1M"
+# "(1M context)" → "1M". Require at least one digit AND exactly one k/K/m/M suffix so a
+# plain "(200000 context)" (no suffix) is left verbatim — matches the PowerShell mirror's
+# stricter regex. Second expression trims any leading/trailing whitespace (PS calls .Trim()).
+model_name=$(echo "$model_name" | sed -E 's/[[:space:]]*\(([0-9]+\.?[0-9]*[kKmM])[[:space:]]+context\)/ \1/; s/^[[:space:]]+|[[:space:]]+$//g')
 
 # Context window
 size=$(echo "$input" | jq -r '.context_window.context_window_size // 200000')
@@ -145,7 +154,7 @@ thinking_enabled=$(echo "$input" | jq -r '.thinking.enabled // empty')
 cli_version=$(echo "$input" | jq -r '.version // empty')
 
 if [ -z "$cli_version" ]; then
-    cli_version_cache="/tmp/claude/statusline-cli-version"
+    cli_version_cache="$cache_dir/statusline-cli-version"
     cli_version_max_age=3600
 
     if [ -f "$cli_version_cache" ]; then
@@ -160,7 +169,7 @@ if [ -z "$cli_version" ]; then
     if [ -z "$cli_version" ]; then
         cli_version=$(claude --version 2>/dev/null | awk '{print $1}')
         if [ -n "$cli_version" ]; then
-            mkdir -p /tmp/claude 2>/dev/null
+            mkdir -p "$cache_dir" 2>/dev/null
             echo "$cli_version" > "$cli_version_cache"
         fi
     fi
@@ -273,21 +282,32 @@ fi
 # Cache setup — shared across all Claude Code instances to avoid rate limits
 claude_config_dir_hash=$(echo -n "$claude_config_dir" | shasum -a 256 2>/dev/null || echo -n "$claude_config_dir" | sha256sum 2>/dev/null)
 claude_config_dir_hash=$(echo "$claude_config_dir_hash" | cut -c1-8)
-cache_file="/tmp/claude/statusline-usage-cache-${claude_config_dir_hash}.json"
+cache_file="$cache_dir/statusline-usage-cache-${claude_config_dir_hash}.json"
+# Separate fetch-throttle stamp: ONLY the OAuth-fetch path below touches it. The refresh
+# gate keys off THIS mtime, not the cache file's, because the builtin rate_limits path
+# rewrites the cache at the end of every render — using the cache mtime would keep it
+# perpetually "fresh" and starve the fetch (the sole source of extra_usage), staling the
+# extra-credits figure whenever renders arrive <cache_max_age apart.
+fetch_stamp="$cache_dir/statusline-usage-fetched-${claude_config_dir_hash}"
 cache_max_age=60  # seconds between API calls
-mkdir -p /tmp/claude
+mkdir -p "$cache_dir"
 
 needs_refresh=true
 usage_data=""
 
-# Always load cache — used as primary source for API path, and as fallback when builtin reports zero
-if [ -f "$cache_file" ] && [ -s "$cache_file" ]; then
-    cache_mtime=$(stat -c %Y "$cache_file" 2>/dev/null || stat -f %m "$cache_file" 2>/dev/null)
+# Refresh gate: fresh only if the fetch stamp was touched < cache_max_age ago.
+if [ -f "$fetch_stamp" ]; then
+    stamp_mtime=$(stat -c %Y "$fetch_stamp" 2>/dev/null || stat -f %m "$fetch_stamp" 2>/dev/null)
     now=$(date +%s)
-    cache_age=$(( now - cache_mtime ))
-    if [ "$cache_age" -lt "$cache_max_age" ]; then
+    stamp_age=$(( now - stamp_mtime ))
+    if [ "$stamp_age" -lt "$cache_max_age" ]; then
         needs_refresh=false
     fi
+fi
+
+# Always load the cache when non-empty (no age check — freshness is the stamp's job). Used
+# as primary source for the API path, and as fallback when builtin reports zero.
+if [ -f "$cache_file" ] && [ -s "$cache_file" ]; then
     usage_data=$(cat "$cache_file" 2>/dev/null)
 fi
 
@@ -313,9 +333,13 @@ fi
 
 # Refresh API cache when stale — runs regardless of builtin rate_limits because
 # extra_usage is only exposed through the OAuth usage endpoint (not stdin JSON).
-# Throttled to cache_max_age and stampede-locked via touch for shared panes.
+# Throttled to cache_max_age and stampede-locked via the fetch stamp for shared panes.
 if $needs_refresh; then
-    touch "$cache_file"  # stampede lock: prevent parallel panes from fetching simultaneously
+    # Touch the stamp up front: it is BOTH the throttle (gates the next fetch for
+    # cache_max_age) and the stampede lock (parallel panes see a fresh stamp and skip
+    # their own fetch). The cache file is never touched here, so builtin-path cache
+    # rewrites can't reset the throttle.
+    touch "$fetch_stamp"
     token=$(get_oauth_token)
     if [ -n "$token" ] && [ "$token" != "null" ]; then
         # Present the real running client version so the usage endpoint applies its normal
@@ -344,9 +368,6 @@ if $needs_refresh; then
             echo "$response" > "$cache_file"
         fi
     fi
-    # Remove the stampede sentinel if the fetch failed to produce valid JSON —
-    # otherwise an empty cache file would suppress retries for a full cache_max_age window.
-    [ -f "$cache_file" ] && [ ! -s "$cache_file" ] && rm -f "$cache_file"
 fi
 
 # Cross-platform ISO to epoch conversion
@@ -465,7 +486,7 @@ if $effective_builtin; then
         five_hour_color=$(usage_color "$five_hour_pct")
         out+="${sep}${white}5h${reset} ${five_hour_color}${five_hour_pct}%${reset}"
         if [ -n "$builtin_five_hour_reset" ] && [ "$builtin_five_hour_reset" != "null" ]; then
-            five_hour_reset=$(date -j -r "$builtin_five_hour_reset" +"%H:%M" 2>/dev/null || date -d "@$builtin_five_hour_reset" +"%H:%M" 2>/dev/null)
+            five_hour_reset=$(date -d "@$builtin_five_hour_reset" +"%H:%M" 2>/dev/null || date -j -r "$builtin_five_hour_reset" +"%H:%M" 2>/dev/null)
             [ -n "$five_hour_reset" ] && out+=" ${dim}@${five_hour_reset}${reset}"
         fi
     fi
@@ -535,7 +556,7 @@ fi
 # Set STATUSLINE_CHECK_UPDATES=false to disable the update check (no network calls).
 update_line=""
 if [ "${STATUSLINE_CHECK_UPDATES:-true}" != "false" ]; then
-    version_cache_file="/tmp/claude/statusline-version-cache.json"
+    version_cache_file="$cache_dir/statusline-version-cache.json"
     version_cache_max_age=86400  # 24 hours
 
     version_needs_refresh=true
@@ -566,6 +587,10 @@ if [ "${STATUSLINE_CHECK_UPDATES:-true}" != "false" ]; then
 
     if [ -n "$version_data" ]; then
         latest_tag=$(echo "$version_data" | jq -r '.tag_name // empty')
+        # The version cache is untrusted (poisonable on shared-/tmp systems) and the tag is
+        # rendered raw into the terminal — restrict it to version characters so a crafted
+        # tag_name can't inject ANSI/OSC escape sequences.
+        latest_tag=$(printf '%s' "$latest_tag" | tr -cd 'v0-9.')
         if [ -n "$latest_tag" ] && version_gt "$latest_tag" "$VERSION"; then
             update_line=$'\n'"${dim}Update available: ${latest_tag} → Tell Claude: \"Find my installed status bar and update it\"${reset}"
         fi

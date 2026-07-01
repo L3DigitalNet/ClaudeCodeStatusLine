@@ -1,7 +1,7 @@
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
-$VERSION = "1.5.0"
+$VERSION = "1.5.1"
 # Single line: Model effort[✦thinking] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
 # Model and effort are joined by a plain space (no ' | ' between them); every other block keeps its ' | '
 # separator. The ✦ after the effort word appears only when thinking.enabled is true.
@@ -67,8 +67,15 @@ function Coalesce($value, $default) {
 # Return $true if $a > $b using semantic versioning
 function Test-VersionGreaterThan([string]$a, [string]$b) {
     try {
-        $va = [version]($a -replace '^v', '')
-        $vb = [version]($b -replace '^v', '')
+        $sa = $a -replace '^v', ''
+        $sb = $b -replace '^v', ''
+        # [version] requires at least major.minor; a bare "2" throws where Bash's version_gt
+        # treats missing components as 0. Append ".0" to a dot-less string so a short tag like
+        # "v2" compares as "2.0" (> "1.5.0") instead of throwing and returning $false.
+        if ($sa -notmatch '\.') { $sa = "$sa.0" }
+        if ($sb -notmatch '\.') { $sb = "$sb.0" }
+        $va = [version]$sa
+        $vb = [version]$sb
         return $va -gt $vb
     } catch {
         return $false
@@ -127,7 +134,9 @@ if (-not $effortLevel) { $effortLevel = "medium" }
 # Lowercase so the rendered word matches Bash, which lowercases before its case statement.
 # (PowerShell's switch is already case-insensitive, but the arms echo $effortLevel verbatim,
 # so without this an input like "Max" would render capitalized here but lowercase in Bash.)
-$effortLevel = ([string]$effortLevel).ToLower()
+# Invariant lowercasing avoids the Turkish-I trap: "HIGH".ToLower() under tr-TR yields "hıgh",
+# which would miss the switch arm and render an unmapped word.
+$effortLevel = ([string]$effortLevel).ToLowerInvariant()
 
 # Extended-thinking flag — drives the ✦ marker fused onto the effort word below.
 $thinkingEnabled = $data.thinking.enabled
@@ -147,7 +156,10 @@ if (-not $cliVersion) {
         $cvMtime = (Get-Item $cliVersionCache).LastWriteTime
         $cvAge = ((Get-Date) - $cvMtime).TotalSeconds
         if ($cvAge -lt $cliVersionMaxAge) {
-            $cliVersion = (Get-Content $cliVersionCache -Raw).Trim()
+            # Get-Content -Raw returns $null for an empty file; calling .Trim() on $null throws.
+            # Read first, then trim/assign only when non-empty.
+            $cvCached = Get-Content $cliVersionCache -Raw
+            if ($cvCached) { $cliVersion = $cvCached.Trim() }
         }
     }
 
@@ -286,6 +298,12 @@ $cfgHash = ([System.BitConverter]::ToString(
     [System.Security.Cryptography.SHA256]::Create().ComputeHash(
         [System.Text.Encoding]::UTF8.GetBytes($claudeConfigDir))) -replace '-', '').ToLower().Substring(0, 8)
 $cacheFile = Join-Path $cacheDir "statusline-usage-cache-$cfgHash.json"
+# Separate fetch-throttle stamp: ONLY the OAuth-fetch path below touches it. The refresh
+# gate keys off THIS mtime, not the cache file's, because the builtin rate_limits path
+# rewrites the cache at the end of every render — using the cache mtime would keep it
+# perpetually "fresh" and starve the fetch (the sole source of extra_usage), staling the
+# extra-credits figure whenever renders arrive <cacheMaxAge apart.
+$fetchStamp = Join-Path $cacheDir "statusline-usage-fetched-$cfgHash"
 $cacheMaxAge = 60  # seconds between API calls
 
 if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null }
@@ -293,27 +311,32 @@ if (-not (Test-Path $cacheDir)) { New-Item -ItemType Directory -Path $cacheDir -
 $needsRefresh = $true
 $usageData = $null
 
-# Always load cache — available as fallback regardless of data source. Require a NON-EMPTY file
-# (mirrors Bash's `[ -s ]`): a concurrent pane's 0-byte stampede-lock file must not be trusted as
-# fresh, or this pane would skip its own fetch and render with no usage data.
-if ((Test-Path $cacheFile) -and ((Get-Item $cacheFile).Length -gt 0)) {
-    $cacheMtime = (Get-Item $cacheFile).LastWriteTime
-    $cacheAge = ((Get-Date) - $cacheMtime).TotalSeconds
-    if ($cacheAge -lt $cacheMaxAge) {
+# Refresh gate: fresh only if the fetch stamp was touched < cacheMaxAge ago.
+if (Test-Path $fetchStamp) {
+    $stampMtime = (Get-Item $fetchStamp).LastWriteTime
+    $stampAge = ((Get-Date) - $stampMtime).TotalSeconds
+    if ($stampAge -lt $cacheMaxAge) {
         $needsRefresh = $false
     }
+}
+
+# Always load the cache when non-empty (no age check — freshness is the stamp's job; mirrors
+# Bash's `[ -s ]`). Available as fallback regardless of data source.
+if ((Test-Path $cacheFile) -and ((Get-Item $cacheFile).Length -gt 0)) {
     $usageData = Get-Content $cacheFile -Raw
 }
 
 # Refresh API cache when stale — runs regardless of builtin rate_limits because
 # extra_usage is only exposed through the OAuth usage endpoint (not stdin JSON).
-# Throttled to cacheMaxAge and stampede-locked via touch for shared panes.
+# Throttled to cacheMaxAge and stampede-locked via the fetch stamp for shared panes.
 if ($needsRefresh) {
-    # Touch cache immediately (stampede lock: prevent parallel instances from fetching simultaneously)
-    if (Test-Path $cacheFile) {
-        (Get-Item $cacheFile).LastWriteTime = Get-Date
+    # Touch the stamp up front: it is BOTH the throttle (gates the next fetch for cacheMaxAge)
+    # and the stampede lock (parallel panes see a fresh stamp and skip their own fetch). The
+    # cache file is never touched here, so builtin-path cache rewrites can't reset the throttle.
+    if (Test-Path $fetchStamp) {
+        (Get-Item $fetchStamp).LastWriteTime = Get-Date
     } else {
-        New-Item -ItemType File -Path $cacheFile -Force | Out-Null
+        New-Item -ItemType File -Path $fetchStamp -Force | Out-Null
     }
     $token = Get-OAuthToken
     if ($token) {
@@ -342,22 +365,16 @@ if ($needsRefresh) {
             }
         } catch {}
     }
-    # Fall back to stale cache
-    if (-not $usageData -and (Test-Path $cacheFile)) {
-        $usageData = Get-Content $cacheFile -Raw
-    }
-    # Remove the stampede sentinel if the fetch failed to produce valid JSON —
-    # otherwise an empty cache file would suppress retries for a full cacheMaxAge window.
-    if ((Test-Path $cacheFile) -and ((Get-Item $cacheFile).Length -eq 0)) {
-        Remove-Item $cacheFile -Force -ErrorAction SilentlyContinue
-    }
+    # On fetch failure $usageData keeps the value loaded from the cache before this block
+    # (mirrors Bash — no re-read). No empty cache file is ever created, so there is nothing
+    # to clean up.
 }
 
 # Format ISO reset time to compact local time
 function Format-ResetTime([string]$isoStr, [string]$style) {
     if (-not $isoStr -or $isoStr -eq "null") { return $null }
     try {
-        $dt = [DateTimeOffset]::Parse($isoStr).LocalDateTime
+        $dt = [DateTimeOffset]::Parse($isoStr, [System.Globalization.CultureInfo]::InvariantCulture).LocalDateTime
         switch ($style) {
             # 24-hour, capitalized, invariant culture — matches Bash strftime %H:%M / %a@%H:%M / %b %-d.
             "time"     { return $dt.ToString("HH:mm", [System.Globalization.CultureInfo]::InvariantCulture) }
@@ -463,13 +480,13 @@ if ($effectiveBuiltin) {
     $fhResetJson = "null"
     if ($null -ne $builtinFiveHourReset -and "$builtinFiveHourReset" -ne "null" -and "$builtinFiveHourReset" -ne "0") {
         try {
-            $fhResetJson = '"' + [DateTimeOffset]::FromUnixTimeSeconds([long]$builtinFiveHourReset).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'") + '"'
+            $fhResetJson = '"' + [DateTimeOffset]::FromUnixTimeSeconds([long]$builtinFiveHourReset).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [System.Globalization.CultureInfo]::InvariantCulture) + '"'
         } catch {}
     }
     $sdResetJson = "null"
     if ($null -ne $builtinSevenDayReset -and "$builtinSevenDayReset" -ne "null" -and "$builtinSevenDayReset" -ne "0") {
         try {
-            $sdResetJson = '"' + [DateTimeOffset]::FromUnixTimeSeconds([long]$builtinSevenDayReset).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'") + '"'
+            $sdResetJson = '"' + [DateTimeOffset]::FromUnixTimeSeconds([long]$builtinSevenDayReset).ToString("yyyy-MM-dd'T'HH:mm:ss'Z'", [System.Globalization.CultureInfo]::InvariantCulture) + '"'
         } catch {}
     }
     $extraJson = "null"
@@ -514,7 +531,7 @@ if ($effectiveBuiltin) {
 # ===== Update check (cached, 24h TTL) =====
 # Set STATUSLINE_CHECK_UPDATES=false to disable the update check (no network calls).
 $updateLine = ""
-if ($env:STATUSLINE_CHECK_UPDATES -ne "false") {
+if ($env:STATUSLINE_CHECK_UPDATES -cne "false") {
     $versionCacheFile = Join-Path $cacheDir "statusline-version-cache.json"
     $versionCacheMaxAge = 86400  # 24 hours
 
@@ -552,6 +569,10 @@ if ($env:STATUSLINE_CHECK_UPDATES -ne "false") {
         try {
             $vcParsed = if ($versionData -is [string]) { $versionData | ConvertFrom-Json } else { $versionData }
             $latestTag = $vcParsed.tag_name
+            # The version cache is untrusted (poisonable on shared-temp systems) and the tag is
+            # rendered raw into the terminal — restrict it to version characters so a crafted
+            # tag_name can't inject ANSI/OSC escape sequences.
+            $latestTag = "$latestTag" -replace '[^v0-9.]', ''
             if ($latestTag -and (Test-VersionGreaterThan $latestTag $VERSION)) {
                 $updateLine = "`n${dim}Update available: ${latestTag} → Tell Claude: `"Find my installed status bar and update it`"${reset}"
             }

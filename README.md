@@ -61,17 +61,19 @@ No `settings.json` changes are needed — the path stays valid across versions.
 
 ## Caching
 
-Usage data from the Anthropic API is cached for 60 seconds at `/tmp/claude/statusline-usage-cache-<hash>.json` (or `%TEMP%\claude\...` on Windows). Release checks are cached for 24 hours. Both caches are shared across concurrent Claude Code instances to avoid rate limits.
+Usage data from the Anthropic API is cached for 60 seconds at `statusline-usage-cache-<hash>.json`, under `${XDG_RUNTIME_DIR:-/tmp}/claude/` on Linux/macOS (a per-user runtime directory when available, falling back to `/tmp`) or `%TEMP%\claude\...` on Windows. A small fetch-stamp file alongside it tracks the 60-second throttle independently of cache writes. Release checks are cached for 24 hours. All caches are shared across concurrent Claude Code instances to avoid rate limits.
 
 ## Update Notifications
 
 The status line checks GitHub for new releases once every 24 hours via an outbound HTTP request to `api.github.com`. When a newer version is available, a second line appears below the status line. The check fails silently if the API is unreachable.
 
-To disable the update check entirely (no network calls):
+To disable the update check entirely (no network calls), set it to the exact string `false`:
 
 ```bash
 export STATUSLINE_CHECK_UPDATES=false
 ```
+
+Any other value, including `0` or `False`, leaves the check enabled.
 
 ## Changelog
 
