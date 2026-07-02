@@ -3,7 +3,7 @@
 
 $VERSION = "1.6.0"
 # Two lines, pipe-aligned grid (column width = max visible width of its two cells):
-#   Model [✦] effort | tokens (%used) | 5h N%    @reset | [+added]   | cwd@branch
+#   Model [✦] effort | tokens %used   | 5h N%    @reset | [+added]   | cwd@branch
 #   vVERSION         | extra $x/$y    | 7d N% Day@reset | [-removed] | worktree
 # Cells are positional: row 2 always renders version/extra/7d/worktree (dim '-'
 # placeholders for unknown version / disabled extra / absent worktree); the +added/
@@ -254,7 +254,7 @@ if ($cwd) {
     }
 }
 
-$tokensCell = "${orange}${usedTokens}/${totalTokens}${reset} ${dim}(${reset}${green}${pctUsed}%${reset}${dim})${reset}"
+$tokensCell = "${orange}${usedTokens}/${totalTokens}${reset} ${green}${pctUsed}%${reset}"
 
 # CLI version — row 2, column 1. Positional, so unknown renders '-' rather than
 # vanishing (vanishing would slide the whole second row left).

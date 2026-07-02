@@ -2,7 +2,7 @@
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 # Two lines, pipe-aligned grid (column width = max visible width of its two cells):
-#   Model [✦] effort | tokens (%used) | 5h N%    @reset | [+added]   | cwd@branch
+#   Model [✦] effort | tokens %used   | 5h N%    @reset | [+added]   | cwd@branch
 #   vVERSION         | extra $x/$y    | 7d N% Day@reset | [-removed] | worktree
 # Cells are positional: row 2 always renders version/extra/7d/worktree (dim '-'
 # placeholders for unknown version / disabled extra / absent worktree); the +added/
@@ -241,7 +241,7 @@ if [ -n "$cwd" ]; then
     fi
 fi
 
-tokens_cell="${orange}${used_tokens}/${total_tokens}${reset} ${dim}(${reset}${green}${pct_used}%${reset}${dim})${reset}"
+tokens_cell="${orange}${used_tokens}/${total_tokens}${reset} ${green}${pct_used}%${reset}"
 
 # CLI version — row 2, column 1. Positional, so unknown renders '-' rather than
 # vanishing (vanishing would slide the whole second row left).

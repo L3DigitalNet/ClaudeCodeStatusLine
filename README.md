@@ -13,14 +13,14 @@ A custom status line for [Claude Code](https://claude.com/claude-code) that disp
 The status line is a two-line grid. Pipes align vertically, each column sizing itself to the wider of its two cells:
 
 ```text
-Sonnet 5 ✦ high | 435k/1M (44%) | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLine@main
-v2.1.198        | extra $0/$25  | 7d 12% Sun@19:00 | -3  | my-worktree
+Sonnet 5 ✦ high | 435k/1M 44%  | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLine@main
+v2.1.198        | extra $0/$25 | 7d 12% Sun@19:00 | -3  | my-worktree
 ```
 
 | Cell | Position | Description |
 |------|----------|-------------|
 | **Model + Effort** | row 1, col 1 | Model name (a `(1M context)` suffix collapses to `1M`), a `✦` when extended thinking is enabled, and the reasoning effort level (`low`, `med`, `high`, `xhigh`, `max`) |
-| **Tokens** | row 1, col 2 | Used / total context-window tokens (% used) |
+| **Tokens** | row 1, col 2 | Used / total context-window tokens and % used |
 | **5h** | row 1, col 3 | 5-hour rate-limit usage percentage and reset time |
 | **Lines +/−** | col 4 | Unstaged line changes in tracked files, `+added` stacked over `-removed` (staged and untracked changes aren't counted). The column appears only while the tree is dirty |
 | **CWD@Branch** | row 1, last | Current folder name and git branch; omitted when Claude Code supplies no working directory |

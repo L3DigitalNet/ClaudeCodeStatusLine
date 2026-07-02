@@ -19,8 +19,8 @@ terminals. Colors are unchanged.
   two cells (content-based; no terminal-width detection).
 
   ```text
-  Sonnet 5 ✦ high | 435k/1M (44%) | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLine@main
-  v2.1.198        | extra $0/$25  | 7d 12% Sun@19:00 | -3  | my-worktree
+  Sonnet 5 ✦ high | 435k/1M 44%  | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLine@main
+  v2.1.198        | extra $0/$25 | 7d 12% Sun@19:00 | -3  | my-worktree
   ```
 
   Row 1: model with the ✦ thinking marker and effort level (one fused cell), tokens,
@@ -28,6 +28,8 @@ terminals. Colors are unchanged.
   lines removed, worktree. Cells with no data render a dim `-` so the grid stays
   aligned; the cwd cell is simply omitted when Claude Code supplies no working
   directory.
+- **Context percentage loses its parentheses:** `435k/1M 44%` instead of
+  `435k/1M (44%)`; the green percent is differentiation enough.
 - **Line changes get their own column:** the unstaged `(+N -M)` suffix that rode inside
   the cwd cell is now a stacked column of its own (green `+added` over red `-removed`,
   no parentheses). As before, it appears only while the tree is dirty.
