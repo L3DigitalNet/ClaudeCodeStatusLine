@@ -6,7 +6,9 @@ A custom status line for [Claude Code](https://claude.com/claude-code) that disp
 
 ## Screenshot
 
-![Status Line Screenshot](screenshot.png)
+![The two-line status line rendered in a terminal](screenshot.png)
+
+Both lines render below the Claude Code input box; the pipes stay aligned as the values change.
 
 ## What it shows
 
