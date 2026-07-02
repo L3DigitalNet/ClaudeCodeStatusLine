@@ -52,6 +52,12 @@ terminals. Colors are unchanged.
   Claude Code `--worktree` isolation session (stdin `worktree.name`), and a dim `-`
   otherwise.
 
+### Fixed
+- **Locale-independent ✦ width (Bash):** under a C/POSIX locale the ✦ thinking marker
+  was measured as 3 bytes instead of 1 display column, over-padding the first column
+  and misaligning the pipes below it. Column widths now count it as a single column
+  in any locale. Verified against bash 3.2.57, the version macOS ships.
+
 ## [1.5.1] - 2026-07-01
 
 A follow-up review pass on 1.5.0 that closes remaining parity gaps between the two mirrors and fixes a cache-staleness bug found in the review.

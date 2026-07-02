@@ -74,6 +74,12 @@ floor_pct() {
 # which ${#} counts as 1 under a UTF-8 locale (standard on Claude Code hosts).
 visible_len() {
     local s="${1//$'\033'\[*([0-9;])m/}"
+    # ✦ is the one non-ASCII glyph the script itself emits. Under a C/POSIX locale
+    # ${#} counts its UTF-8 bytes (3) rather than its single display column, which
+    # over-pads the column and misaligns the pipes; swap it for one ASCII char
+    # before counting so the width is right in any locale. (PowerShell needs no
+    # equivalent — .Length already counts it as 1.)
+    s="${s//✦/.}"
     printf '%s' "${#s}"
 }
 
