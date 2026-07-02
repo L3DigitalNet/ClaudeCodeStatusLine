@@ -1,11 +1,16 @@
 #!/bin/bash
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
-# Single line: Model effort[✦thinking] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
-# Model and effort are joined by a plain space (no ' | ' between them); every other block keeps its ' | '
-# separator. The ✦ after the effort word appears only when thinking.enabled is true.
+# Two lines, pipe-aligned grid (column width = max visible width of its two cells):
+#   Model [✦] effort | tokens (%used) | 5h N%    @reset | cwd@branch (+N -M)
+#   vVERSION         | extra $x/$y    | 7d N% Day@reset | worktree
+# Cells are positional: row 2 always renders all four (dim '-' placeholders for
+# unknown version / disabled extra / absent worktree); row 1's cwd cell is omitted
+# when there is no cwd. The 5h/7d cells right-align their percents and stack their
+# '@'s. The ✦ between model and effort appears only when thinking.enabled is true.
 
 set -f  # disable globbing
+shopt -s extglob  # extended globs in ${var//pat/} — visible_len strips SGR escapes with *([0-9;])
 VERSION="1.5.1"
 
 input=$(cat)
@@ -57,6 +62,24 @@ format_tokens() {
 # boundary value like 89.6 doesn't cross a color threshold in one script but not the other.
 floor_pct() {
     awk -v n="$1" 'BEGIN { printf "%d", n }'
+}
+
+# Visible (printable) length of a cell: character count with the script's own SGR
+# color escapes stripped. extglob's *([0-9;]) keeps the glob anchored inside one
+# escape — a bare * would greedily eat through to the LAST 'm' in the string. Only
+# SGR (ESC[...m) needs stripping: it is the only escape family this script emits.
+# Counts characters, not terminal columns: content is ASCII plus the single-width ✦,
+# which ${#} counts as 1 under a UTF-8 locale (standard on Claude Code hosts).
+visible_len() {
+    local s="${1//$'\033'\[*([0-9;])m/}"
+    printf '%s' "${#s}"
+}
+
+# Credits (cents) -> dollar string: whole dollars render as integers ('0', '25'),
+# fractional keep two decimals ('3.50'). LC_NUMERIC=C pins the '.' separator.
+fmt_credits() {
+    LC_NUMERIC=C awk -v c="$1" 'BEGIN { v = c / 100
+        if (v == int(v)) printf "%d", v; else printf "%.2f", v }'
 }
 
 # Return color escape based on usage percentage
@@ -175,40 +198,58 @@ if [ -z "$cli_version" ]; then
     fi
 fi
 
-# ===== Build single-line output =====
-out=""
-out+="${blue}${model_name}${reset}"
+# ===== Build cells for the two-line grid =====
+# Cells are positional (see header): a missing cell in row 2 renders a dim '-' —
+# otherwise later cells slide left and the pipes stop aligning; row 1's cwd cell
+# is trailing and simply omitted when absent.
 
-# Effort — second from the left, joined to the model block by a plain space (no ' | '
-# separator). A trailing ✦ marks extended thinking being enabled (orthogonal to the level).
-out+=" "
+# Model [✦] effort — row 1, column 1: one fused, space-joined cell. The ✦ sits
+# between the model name and the effort word (only when thinking is enabled).
 case "$effort_level" in
-    low)    out+="${dim}${effort_level}${reset}" ;;
-    medium) out+="${orange}med${reset}" ;;
-    high)   out+="${green}${effort_level}${reset}" ;;
-    xhigh)  out+="${purple}${effort_level}${reset}" ;;
-    max)    out+="${red}${effort_level}${reset}" ;;
-    *)      out+="${green}${effort_level}${reset}" ;;
+    low)    effort_part="${dim}${effort_level}${reset}" ;;
+    medium) effort_part="${orange}med${reset}" ;;
+    high)   effort_part="${green}${effort_level}${reset}" ;;
+    xhigh)  effort_part="${purple}${effort_level}${reset}" ;;
+    max)    effort_part="${red}${effort_level}${reset}" ;;
+    *)      effort_part="${green}${effort_level}${reset}" ;;
 esac
-[ "$thinking_enabled" = "true" ] && out+="${purple}✦${reset}"
+model_cell="${blue}${model_name}${reset}"
+[ "$thinking_enabled" = "true" ] && model_cell+=" ${purple}✦${reset}"
+model_cell+=" ${effort_part}"
 
-# Current working directory. Prefer workspace.current_dir (the documented-preferred alias);
-# fall back to the top-level .cwd for older CLIs. Same value — no visual change.
+# Current working directory — row 1, trailing cell. Prefer workspace.current_dir
+# (the documented-preferred alias); fall back to the top-level .cwd for older CLIs.
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // empty')
+cwd_cell=""
 if [ -n "$cwd" ]; then
     display_dir="${cwd##*/}"
     git_branch=$(git -C "${cwd}" rev-parse --abbrev-ref HEAD 2>/dev/null)
-    out+=" ${dim}|${reset} "
-    out+="${cyan}${display_dir}${reset}"
+    cwd_cell="${cyan}${display_dir}${reset}"
     if [ -n "$git_branch" ]; then
-        out+="${dim}@${reset}${green}${git_branch}${reset}"
+        cwd_cell+="${dim}@${reset}${green}${git_branch}${reset}"
         git_stat=$(git -C "${cwd}" diff --numstat 2>/dev/null | awk '{a+=$1; d+=$2} END {if (a+d>0) printf "+%d -%d", a, d}')
-        [ -n "$git_stat" ] && out+=" ${dim}(${reset}${green}${git_stat%% *}${reset} ${red}${git_stat##* }${reset}${dim})${reset}"
+        [ -n "$git_stat" ] && cwd_cell+=" ${dim}(${reset}${green}${git_stat%% *}${reset} ${red}${git_stat##* }${reset}${dim})${reset}"
     fi
 fi
 
-out+=" ${dim}|${reset} "
-out+="${orange}${used_tokens}/${total_tokens}${reset} ${dim}(${reset}${green}${pct_used}%${reset}${dim})${reset}"
+tokens_cell="${orange}${used_tokens}/${total_tokens}${reset} ${dim}(${reset}${green}${pct_used}%${reset}${dim})${reset}"
+
+# CLI version — row 2, column 1. Positional, so unknown renders '-' rather than
+# vanishing (vanishing would slide the whole second row left).
+if [ -n "$cli_version" ]; then
+    version_cell="${orange}v${cli_version}${reset}"
+else
+    version_cell="${dim}-${reset}"
+fi
+
+# Worktree — row 2, column 4. stdin .worktree.name exists only in --worktree
+# isolation sessions; cyan matches the directory-identity color above it.
+worktree_name=$(echo "$input" | jq -r '.worktree.name // empty')
+if [ -n "$worktree_name" ]; then
+    worktree_cell="${cyan}${worktree_name}${reset}"
+else
+    worktree_cell="${dim}-${reset}"
+fi
 
 # ===== Cross-platform OAuth token resolution (from statusline.sh) =====
 # Tries credential sources in order: env var → macOS Keychain → Linux creds file → GNOME Keyring
@@ -445,10 +486,14 @@ format_reset_time() {
 
 sep=" ${dim}|${reset} "
 
-# Render extra_usage segment from API usage data (not available via stdin rate_limits).
-# Appends to the global $out. No-op when data is missing or is_enabled is false.
+# Compute the extra_usage cell (row 2, column 2) from API usage data — extra_usage
+# is not available via stdin rate_limits. Sets the global extra_cell. Positional:
+# defaults to a dim '-' (disabled / no data); shows dollar figures whenever
+# is_enabled, INCLUDING a $0 month — the old hide-at-$0.00 rule is gone because a
+# grid cell cannot vanish. The grid assembler owns separators; no leading ' | '.
 render_extra_usage() {
     local data="$1"
+    extra_cell="${dim}-${reset}"
     [ -z "$data" ] && return
     local enabled
     enabled=$(echo "$data" | jq -r '.extra_usage.is_enabled // false' 2>/dev/null)
@@ -458,50 +503,54 @@ render_extra_usage() {
     raw_used=$(echo "$data" | jq -r '.extra_usage.used_credits // empty')
     raw_limit=$(echo "$data" | jq -r '.extra_usage.monthly_limit // empty')
 
-    # Show dollar figures only when both credit values are numeric. When they are absent or
-    # malformed, fall back to a plain "enabled" marker rather than silently rendering
-    # nothing — awk would otherwise coerce garbage to 0.00 and the block would vanish as if
-    # unused. (This 'else' branch was previously unreachable.)
+    # Show dollar figures only when both credit values are numeric. When they are
+    # absent or malformed, fall back to a plain "enabled" marker rather than the
+    # '-' placeholder — awk would otherwise coerce garbage to 0.
     if [[ "$raw_used" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ "$raw_limit" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
-        used=$(echo "$raw_used" | LC_NUMERIC=C awk '{printf "%.2f", $1/100}')
-        limit=$(echo "$raw_limit" | LC_NUMERIC=C awk '{printf "%.2f", $1/100}')
-
-        # Hide the block entirely until some extra usage has been spent this month.
-        # It reappears automatically once used_credits > 0 (i.e. $used is no longer 0.00).
-        [ "$used" = "0.00" ] && return
-
+        used=$(fmt_credits "$raw_used")
+        limit=$(fmt_credits "$raw_limit")
         pct=$(echo "$data" | jq -r '.extra_usage.utilization // 0' | awk '{printf "%d", $1}')
         color=$(usage_color "$pct")
-        out+="${sep}${white}extra${reset} ${color}\$${used}/\$${limit}${reset}"
+        extra_cell="${white}extra${reset} ${color}\$${used}/\$${limit}${reset}"
     else
-        out+="${sep}${white}extra${reset} ${green}enabled${reset}"
+        extra_cell="${white}extra${reset} ${green}enabled${reset}"
     fi
 }
+
+# 5h/7d cell pieces + the extra cell. Defaults are the no-data placeholders;
+# branches overwrite. fh_time/sd_time include their leading '@'; sd_prefix is the
+# weekday ('' for 5h).
+fh_pct_txt="-"; fh_color="$dim"; fh_time=""
+sd_pct_txt="-"; sd_color="$dim"; sd_prefix=""; sd_time=""
+extra_cell="${dim}-${reset}"
 
 if $effective_builtin; then
     # ---- Use rate_limits data provided directly by Claude Code in JSON input ----
     # resets_at values are Unix epoch integers in this source
     if [ -n "$builtin_five_hour_pct" ]; then
         five_hour_pct=$(floor_pct "$builtin_five_hour_pct")
-        five_hour_color=$(usage_color "$five_hour_pct")
-        out+="${sep}${white}5h${reset} ${five_hour_color}${five_hour_pct}%${reset}"
+        fh_pct_txt="${five_hour_pct}%"
+        fh_color=$(usage_color "$five_hour_pct")
         if [ -n "$builtin_five_hour_reset" ] && [ "$builtin_five_hour_reset" != "null" ]; then
             five_hour_reset=$(date -d "@$builtin_five_hour_reset" +"%H:%M" 2>/dev/null || date -j -r "$builtin_five_hour_reset" +"%H:%M" 2>/dev/null)
-            [ -n "$five_hour_reset" ] && out+=" ${dim}@${five_hour_reset}${reset}"
+            [ -n "$five_hour_reset" ] && fh_time="@${five_hour_reset}"
         fi
     fi
 
     if [ -n "$builtin_seven_day_pct" ]; then
         seven_day_pct=$(floor_pct "$builtin_seven_day_pct")
-        seven_day_color=$(usage_color "$seven_day_pct")
-        out+="${sep}${white}7d${reset} ${seven_day_color}${seven_day_pct}%${reset}"
+        sd_pct_txt="${seven_day_pct}%"
+        sd_color=$(usage_color "$seven_day_pct")
         if [ -n "$builtin_seven_day_reset" ] && [ "$builtin_seven_day_reset" != "null" ]; then
             seven_day_reset=$(LC_ALL=C date -j -r "$builtin_seven_day_reset" +"%a@%H:%M" 2>/dev/null || LC_ALL=C date -d "@$builtin_seven_day_reset" +"%a@%H:%M" 2>/dev/null)
-            [ -n "$seven_day_reset" ] && out+=" ${dim}${seven_day_reset}${reset}"
+            if [ -n "$seven_day_reset" ]; then
+                sd_prefix="${seven_day_reset%%@*}"
+                sd_time="@${seven_day_reset#*@}"
+            fi
         fi
     fi
 
-    # Render extra_usage from API cache (stdin rate_limits doesn't expose it)
+    # Compute the extra cell from the API cache (stdin rate_limits doesn't expose it)
     render_extra_usage "$usage_data"
 
     # Cache builtin values so they're available as fallback when API is unavailable.
@@ -531,26 +580,38 @@ elif [ -n "$usage_data" ] && echo "$usage_data" | jq -e '.five_hour' >/dev/null 
     five_hour_pct=$(echo "$usage_data" | jq -r '.five_hour.utilization // 0' | awk '{printf "%d", $1}')
     five_hour_reset_iso=$(echo "$usage_data" | jq -r '.five_hour.resets_at // empty')
     five_hour_reset=$(format_reset_time "$five_hour_reset_iso" "time")
-    five_hour_color=$(usage_color "$five_hour_pct")
-
-    out+="${sep}${white}5h${reset} ${five_hour_color}${five_hour_pct}%${reset}"
-    [ -n "$five_hour_reset" ] && out+=" ${dim}@${five_hour_reset}${reset}"
+    fh_pct_txt="${five_hour_pct}%"
+    fh_color=$(usage_color "$five_hour_pct")
+    [ -n "$five_hour_reset" ] && fh_time="@${five_hour_reset}"
 
     # ---- 7-day (weekly) ----
     seven_day_pct=$(echo "$usage_data" | jq -r '.seven_day.utilization // 0' | awk '{printf "%d", $1}')
     seven_day_reset_iso=$(echo "$usage_data" | jq -r '.seven_day.resets_at // empty')
     seven_day_reset=$(format_reset_time "$seven_day_reset_iso" "datetime")
-    seven_day_color=$(usage_color "$seven_day_pct")
-
-    out+="${sep}${white}7d${reset} ${seven_day_color}${seven_day_pct}%${reset}"
-    [ -n "$seven_day_reset" ] && out+=" ${dim}${seven_day_reset}${reset}"
+    sd_pct_txt="${seven_day_pct}%"
+    sd_color=$(usage_color "$seven_day_pct")
+    if [ -n "$seven_day_reset" ]; then
+        sd_prefix="${seven_day_reset%%@*}"
+        sd_time="@${seven_day_reset#*@}"
+    fi
 
     render_extra_usage "$usage_data"
 else
-    # No valid usage data — show placeholders
-    out+="${sep}${white}5h${reset} ${dim}-${reset}"
-    out+="${sep}${white}7d${reset} ${dim}-${reset}"
+    : # No valid usage data — the '-' placeholder defaults above stand.
 fi
+
+# ---- Compose the 5h/7d cells with internal %/@ alignment ----
+# Right-align the percent strings to a shared width, and pad-left the pre-'@'
+# fragment (always empty for 5h, the weekday for 7d) so the two '@'s stack. Widths
+# derive from the actual values — a 3-digit 100% or a '-' placeholder self-adjusts.
+pct_w=${#fh_pct_txt}
+[ ${#sd_pct_txt} -gt "$pct_w" ] && pct_w=${#sd_pct_txt}
+pre_w=${#sd_prefix}
+
+five_cell="${white}5h${reset} $(printf '%*s' $(( pct_w - ${#fh_pct_txt} )) '')${fh_color}${fh_pct_txt}${reset}"
+[ -n "$fh_time" ] && five_cell+=" $(printf '%*s' "$pre_w" '')${dim}${fh_time}${reset}"
+seven_cell="${white}7d${reset} $(printf '%*s' $(( pct_w - ${#sd_pct_txt} )) '')${sd_color}${sd_pct_txt}${reset}"
+[ -n "$sd_time" ] && seven_cell+=" ${dim}${sd_prefix}${sd_time}${reset}"
 
 # ===== Update check (cached, 24h TTL) =====
 # Set STATUSLINE_CHECK_UPDATES=false to disable the update check (no network calls).
@@ -597,13 +658,42 @@ if [ "${STATUSLINE_CHECK_UPDATES:-true}" != "false" ]; then
     fi
 fi
 
-# Append CLI version as last segment
-if [ -n "$cli_version" ]; then
-    out+=" ${dim}|${reset} ${orange}v${cli_version}${reset}"
-fi
+# ===== Assemble the two-line grid =====
+# Column width = max visible width of the column's two cells; every cell except the
+# last of its row pads right with PLAIN spaces to that width, so the ' | ' separators
+# stack vertically. Row 2 always has four cells; row 1 may stop after the 5h cell.
+r1=( "$model_cell" "$tokens_cell" "$five_cell" )
+[ -n "$cwd_cell" ] && r1+=( "$cwd_cell" )
+r2=( "$version_cell" "$extra_cell" "$seven_cell" "$worktree_cell" )
 
-# Output. '%s' (not '%b') so backslash escapes in JSON-derived fields are printed literally
-# and can't split the line; colors and the update-line newline are already real bytes above.
-printf '%s' "$out$update_line"
+line1=""
+line2=""
+i=0
+while [ "$i" -lt "${#r1[@]}" ] || [ "$i" -lt "${#r2[@]}" ]; do
+    c1=""; c2=""; w1=0; w2=0
+    if [ "$i" -lt "${#r1[@]}" ]; then c1="${r1[$i]}"; w1=$(visible_len "$c1"); fi
+    if [ "$i" -lt "${#r2[@]}" ]; then c2="${r2[$i]}"; w2=$(visible_len "$c2"); fi
+    w=$(( w1 > w2 ? w1 : w2 ))
+    if [ "$i" -lt "${#r1[@]}" ]; then
+        if [ "$i" -lt $(( ${#r1[@]} - 1 )) ]; then
+            line1+="$c1$(printf '%*s' $(( w - w1 )) '')${sep}"
+        else
+            line1+="$c1"
+        fi
+    fi
+    if [ "$i" -lt "${#r2[@]}" ]; then
+        if [ "$i" -lt $(( ${#r2[@]} - 1 )) ]; then
+            line2+="$c2$(printf '%*s' $(( w - w2 )) '')${sep}"
+        else
+            line2+="$c2"
+        fi
+    fi
+    i=$(( i + 1 ))
+done
+
+# Output. '%s' (not '%b') so backslash escapes in JSON-derived fields are printed
+# literally and can't split cells; colors and the real newlines (grid + update line)
+# are already real bytes above.
+printf '%s' "$line1"$'\n'"$line2$update_line"
 
 exit 0
