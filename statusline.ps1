@@ -1,7 +1,7 @@
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
-$VERSION = "1.5.1"
+$VERSION = "1.6.0"
 # Two lines, pipe-aligned grid (column width = max visible width of its two cells):
 #   Model [✦] effort | tokens (%used) | 5h N%    @reset | cwd@branch (+N -M)
 #   vVERSION         | extra $x/$y    | 7d N% Day@reset | worktree

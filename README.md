@@ -1,6 +1,6 @@
 # Claude Code Status Line
 
-A custom status line for [Claude Code](https://claude.com/claude-code) that displays the model, reasoning effort, token usage, rate limits, reset times, and the installed CLI version in a single compact line. It runs as an external shell command, so it does not slow down Claude Code or consume any extra tokens.
+A custom status line for [Claude Code](https://claude.com/claude-code) that displays the model, reasoning effort, token usage, rate limits, reset times, and the installed CLI version in two compact, aligned lines. It runs as an external shell command, so it does not slow down Claude Code or consume any extra tokens.
 
 > **Actively maintained.** This is an independent continuation of [daniel3303/ClaudeCodeStatusLine](https://github.com/daniel3303/ClaudeCodeStatusLine), maintained by [@chrisdpurcell](https://github.com/chrisdpurcell). See the [changelog](CHANGELOG.md) for what's new. **To get notified of updates:** click **Watch → Custom → Releases** at the top of the repo — or leave the built-in update check on, which flags a new release in the status line itself.
 
@@ -10,21 +10,26 @@ A custom status line for [Claude Code](https://claude.com/claude-code) that disp
 
 ## What it shows
 
-Segments render left to right in this order:
+The status line is a two-line grid. Pipes align vertically, each column sizing itself to the wider of its two cells:
 
-| Segment | Description |
-|---------|-------------|
-| **Model** | Current model name (e.g., Opus 4.8); a `(1M context)` suffix collapses to `1M` |
-| **Effort** | Reasoning effort level (`low`, `med`, `high`, `xhigh`, `max`); a `✦` is appended when extended thinking is enabled |
-| **CWD@Branch** | Current folder name, git branch, and unstaged line changes (+/-, tracked files only — staged and untracked changes aren't counted) |
-| **Tokens** | Used / total context-window tokens (% used) |
-| **5h** | 5-hour rate-limit usage percentage and reset time |
-| **7d** | 7-day rate-limit usage percentage and reset time |
-| **Extra** | Extra-usage credits spent / limit (appears automatically once any extra usage has been spent this month) |
-| **Version** | Installed Claude Code CLI version |
-| **Update** | A second line that appears when a new release is available (checked every 24h) |
+```text
+Sonnet 5 ✦ high | 435k/1M (44%) | 5h  4%    @16:40 | ClaudeCodeStatusLine@main
+v2.1.198        | extra $0/$25  | 7d 12% Sun@19:00 | my-worktree
+```
 
-The model and effort segments are joined by a space; every other segment is separated by ` | `.
+| Cell | Position | Description |
+|------|----------|-------------|
+| **Model + Effort** | row 1, col 1 | Model name (a `(1M context)` suffix collapses to `1M`), a `✦` when extended thinking is enabled, and the reasoning effort level (`low`, `med`, `high`, `xhigh`, `max`) |
+| **Tokens** | row 1, col 2 | Used / total context-window tokens (% used) |
+| **5h** | row 1, col 3 | 5-hour rate-limit usage percentage and reset time |
+| **CWD@Branch** | row 1, col 4 | Current folder name, git branch, and unstaged line changes (+/-, tracked files only: staged and untracked changes aren't counted); omitted when Claude Code supplies no working directory |
+| **Version** | row 2, col 1 | Installed Claude Code CLI version, or `-` when unknown |
+| **Extra** | row 2, col 2 | Extra-usage credits spent / limit whenever extra usage is enabled (whole dollars drop the cents: `$0/$25`); `-` when disabled |
+| **7d** | row 2, col 3 | 7-day rate-limit usage percentage and reset time |
+| **Worktree** | row 2, col 4 | Worktree name in `--worktree` sessions; `-` otherwise |
+| **Update** | line 3 | Appears when a new release is available (checked every 24h) |
+
+Within the 5h/7d column the percentages right-align and the `@` reset markers stack, so the two rows read as one table.
 
 Usage percentages are floored and color-coded: green (&lt;50%) → yellow (≥50%) → orange (≥70%) → red (≥90%).
 

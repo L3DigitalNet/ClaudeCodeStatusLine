@@ -8,6 +8,44 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both implementations — `statusline.sh` (Bash) and `statusline.ps1` (PowerShell) — are
 functional mirrors; every entry below applies to both unless noted.
 
+## [1.6.0] - 2026-07-02
+
+The status line now renders as two lines instead of one, making it readable on narrower
+terminals. Colors are unchanged.
+
+### Changed
+- **Two-line grid layout:** the segments are arranged in two rows of pipe-separated
+  cells, and the pipes align vertically. Each column is as wide as the wider of its
+  two cells (content-based; no terminal-width detection).
+
+  ```text
+  Sonnet 5 ✦ high | 435k/1M (44%) | 5h  4%    @16:40 | ClaudeCodeStatusLine@main
+  v2.1.198        | extra $0/$25  | 7d 12% Sun@19:00 | my-worktree
+  ```
+
+  Row 1: model with the ✦ thinking marker and effort level (one fused cell), tokens,
+  5-hour usage, cwd@branch. Row 2: CLI version, extra usage, 7-day usage, worktree.
+  Cells with no data render a dim `-` so the grid stays aligned; the cwd cell is
+  simply omitted when Claude Code supplies no working directory.
+- **Thinking marker position:** the `✦` now sits between the model name and the effort
+  word (`Sonnet 5 ✦ high`); previously it was appended after the effort word.
+- **5h/7d internal alignment:** the two usage cells right-align their percentages and
+  stack their `@` reset markers, so `4%` sits under `12%` and `@16:40` under
+  `Sun@19:00`.
+- **Extra usage is always visible when enabled:** the cell shows dollar figures
+  whenever the account has extra usage enabled, including a `$0` month (previously the
+  segment was hidden until something was spent). It shows a dim `-` when extra usage
+  is disabled or no API data is available.
+- **Whole-dollar amounts drop the cents:** `$0/$25` instead of `$0.00/$25.00`;
+  fractional amounts keep two decimals (`$3.50`).
+- **Version cell placeholder:** when the CLI version cannot be determined, the cell
+  renders a dim `-` instead of disappearing.
+
+### Added
+- **Worktree segment:** row 2 ends with the worktree name when the session runs in a
+  Claude Code `--worktree` isolation session (stdin `worktree.name`), and a dim `-`
+  otherwise.
+
 ## [1.5.1] - 2026-07-01
 
 A follow-up review pass on 1.5.0 that closes remaining parity gaps between the two mirrors and fixes a cache-staleness bug found in the review.

@@ -11,7 +11,7 @@
 
 set -f  # disable globbing
 shopt -s extglob  # extended globs in ${var//pat/} — visible_len strips SGR escapes with *([0-9;])
-VERSION="1.5.1"
+VERSION="1.6.0"
 
 input=$(cat)
 
