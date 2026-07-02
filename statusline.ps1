@@ -2,9 +2,13 @@
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
 $VERSION = "1.5.1"
-# Single line: Model effort[✦thinking] | cwd@branch | tokens (%used) | 5h bar @reset | 7d bar @reset | extra | version
-# Model and effort are joined by a plain space (no ' | ' between them); every other block keeps its ' | '
-# separator. The ✦ after the effort word appears only when thinking.enabled is true.
+# Two lines, pipe-aligned grid (column width = max visible width of its two cells):
+#   Model [✦] effort | tokens (%used) | 5h N%    @reset | cwd@branch (+N -M)
+#   vVERSION         | extra $x/$y    | 7d N% Day@reset | worktree
+# Cells are positional: row 2 always renders all four (dim '-' placeholders for
+# unknown version / disabled extra / absent worktree); row 1's cwd cell is omitted
+# when there is no cwd. The 5h/7d cells right-align their percents and stack their
+# '@'s. The ✦ between model and effort appears only when thinking.enabled is true.
 
 # Read input from stdin
 $input = @($Input) -join "`n"
@@ -57,6 +61,22 @@ function Get-UsageColor([int]$pct) {
     elseif ($pct -ge 70) { return $orange }
     elseif ($pct -ge 50) { return $yellow }
     else { return $green }
+}
+
+# Visible (printable) length of a cell: character count with the script's own SGR
+# color escapes stripped — the only escape family this script emits. .Length counts
+# the single-width ✦ (BMP) as 1, matching Bash ${#} under UTF-8.
+function Get-VisibleLength([string]$s) {
+    return ($s -replace "$([char]27)\[[0-9;]*m", '').Length
+}
+
+# Credits (cents) -> dollar string: whole dollars render as integers ('0', '25'),
+# fractional keep two decimals ('3.50'). Invariant culture pins the '.' separator.
+function Format-Credits([double]$credits) {
+    $inv = [System.Globalization.CultureInfo]::InvariantCulture
+    $v = $credits / 100
+    if ($v -eq [math]::Floor($v)) { return $v.ToString("F0", $inv) }
+    return $v.ToString("F2", $inv)
 }
 
 # Null coalescing helper for PowerShell 5 compatibility (?? is PS7+ only)
@@ -177,36 +197,39 @@ if (-not $cliVersion) {
     }
 }
 
-# ===== Build single-line output =====
-$out = ""
-$out += "${blue}${modelName}${reset}"
+# ===== Build cells for the two-line grid =====
+# Cells are positional (see header): a missing cell in row 2 renders a dim '-' —
+# otherwise later cells slide left and the pipes stop aligning; row 1's cwd cell
+# is trailing and simply omitted when absent.
 
-# Effort — second from the left, joined to the model block by a plain space (no ' | '
-# separator). A trailing ✦ marks extended thinking being enabled (orthogonal to the level).
-$out += " "
+# Model [✦] effort — row 1, column 1: one fused, space-joined cell. The ✦ sits
+# between the model name and the effort word (only when thinking is enabled).
+$effortPart = ""
 switch ($effortLevel) {
-    "low"    { $out += "${dim}${effortLevel}${reset}" }
-    "medium" { $out += "${orange}med${reset}" }
-    "high"   { $out += "${green}${effortLevel}${reset}" }
-    "xhigh"  { $out += "${purple}${effortLevel}${reset}" }
-    "max"    { $out += "${red}${effortLevel}${reset}" }
-    default  { $out += "${green}${effortLevel}${reset}" }
+    "low"    { $effortPart = "${dim}${effortLevel}${reset}" }
+    "medium" { $effortPart = "${orange}med${reset}" }
+    "high"   { $effortPart = "${green}${effortLevel}${reset}" }
+    "xhigh"  { $effortPart = "${purple}${effortLevel}${reset}" }
+    "max"    { $effortPart = "${red}${effortLevel}${reset}" }
+    default  { $effortPart = "${green}${effortLevel}${reset}" }
 }
-if ($thinkingEnabled -eq $true) { $out += "${purple}✦${reset}" }
+$modelCell = "${blue}${modelName}${reset}"
+if ($thinkingEnabled -eq $true) { $modelCell += " ${purple}✦${reset}" }
+$modelCell += " ${effortPart}"
 
-# Current working directory. Prefer workspace.current_dir (the documented-preferred alias);
-# fall back to the top-level .cwd for older CLIs. Same value — no visual change.
+# Current working directory — row 1, trailing cell. Prefer workspace.current_dir
+# (the documented-preferred alias); fall back to the top-level .cwd for older CLIs.
 $cwd = if ($data.workspace.current_dir) { $data.workspace.current_dir } else { $data.cwd }
+$cwdCell = ""
 if ($cwd) {
     $displayDir = Split-Path $cwd -Leaf
     $gitBranch = $null
     try {
         $gitBranch = git -C $cwd rev-parse --abbrev-ref HEAD 2>$null
     } catch {}
-    $out += " ${dim}|${reset} "
-    $out += "${cyan}${displayDir}${reset}"
+    $cwdCell = "${cyan}${displayDir}${reset}"
     if ($gitBranch) {
-        $out += "${dim}@${reset}${green}${gitBranch}${reset}"
+        $cwdCell += "${dim}@${reset}${green}${gitBranch}${reset}"
         try {
             $numstat = git -C $cwd diff --numstat 2>$null
             if ($numstat) {
@@ -217,15 +240,23 @@ if ($cwd) {
                     if ($parts[1] -match '^\d+$') { $deleted += [int]$parts[1] }
                 }
                 if (($added + $deleted) -gt 0) {
-                    $out += " ${dim}(${reset}${green}+${added}${reset} ${red}-${deleted}${reset}${dim})${reset}"
+                    $cwdCell += " ${dim}(${reset}${green}+${added}${reset} ${red}-${deleted}${reset}${dim})${reset}"
                 }
             }
         } catch {}
     }
 }
 
-$out += " ${dim}|${reset} "
-$out += "${orange}${usedTokens}/${totalTokens}${reset} ${dim}(${reset}${green}${pctUsed}%${reset}${dim})${reset}"
+$tokensCell = "${orange}${usedTokens}/${totalTokens}${reset} ${dim}(${reset}${green}${pctUsed}%${reset}${dim})${reset}"
+
+# CLI version — row 2, column 1. Positional, so unknown renders '-' rather than
+# vanishing (vanishing would slide the whole second row left).
+$versionCell = if ($cliVersion) { "${orange}v${cliVersion}${reset}" } else { "${dim}-${reset}" }
+
+# Worktree — row 2, column 4. stdin .worktree.name exists only in --worktree
+# isolation sessions; cyan matches the directory-identity color above it.
+$worktreeName = $data.worktree.name
+$worktreeCell = if ($worktreeName) { "${cyan}${worktreeName}${reset}" } else { "${dim}-${reset}" }
 
 # ===== OAuth token resolution =====
 function Get-OAuthToken {
@@ -400,43 +431,40 @@ function Format-EpochResetTime([object]$epoch, [string]$style) {
 
 $sep = " ${dim}|${reset} "
 
-# Render extra_usage segment from API usage data (not available via stdin rate_limits).
-# Returns the segment string (may be empty). No-op when data is missing or is_enabled is false.
+# Compute the extra_usage cell (row 2, column 2) from API usage data — extra_usage
+# is not available via stdin rate_limits. Returns the cell string. Positional:
+# defaults to a dim '-' (disabled / no data); shows dollar figures whenever
+# is_enabled, INCLUDING a $0 month — the old hide-at-$0.00 rule is gone because a
+# grid cell cannot vanish. The grid assembler owns separators; no leading ' | '.
 function Format-ExtraUsage($usage) {
-    if (-not $usage) { return "" }
+    $placeholder = "${dim}-${reset}"
+    if (-not $usage) { return $placeholder }
     try {
         $enabled = $usage.extra_usage.is_enabled
-        if ($enabled -ne $true) { return "" }
+        if ($enabled -ne $true) { return $placeholder }
 
         $usedRaw = $usage.extra_usage.used_credits
         $limitRaw = $usage.extra_usage.monthly_limit
 
-        # Show dollar figures only when both credit values are numeric. When they are absent
-        # or malformed, fall back to a plain "enabled" marker rather than silently rendering
-        # nothing. (This 'else' branch was previously unreachable.)
-        # Parse and format with invariant culture so the decimal is always '.', matching Bash's
-        # LC_NUMERIC=C awk. Without this, comma-decimal locales (de-DE/fr-FR) render "0,00" — which
-        # both looks wrong AND defeats the "0.00" hide guard below, showing a $0 block that Bash hides.
+        # Show dollar figures only when both credit values are numeric. When they are
+        # absent or malformed, fall back to a plain "enabled" marker rather than the
+        # '-' placeholder. Parse with invariant culture so the decimal is always '.',
+        # matching Bash's LC_NUMERIC=C awk (comma-decimal locales would render "0,00").
         $inv = [System.Globalization.CultureInfo]::InvariantCulture
         $usedNum = 0.0
         $limitNum = 0.0
         if ([double]::TryParse([string]$usedRaw, [System.Globalization.NumberStyles]::Float, $inv, [ref]$usedNum) -and
             [double]::TryParse([string]$limitRaw, [System.Globalization.NumberStyles]::Float, $inv, [ref]$limitNum)) {
-            $used = ($usedNum / 100).ToString("F2", $inv)
-
-            # Hide the block entirely until some extra usage has been spent this month.
-            # It reappears automatically once used_credits > 0 (i.e. $used is no longer 0.00).
-            if ($used -eq "0.00") { return "" }
-
-            $limit = ($limitNum / 100).ToString("F2", $inv)
+            $used = Format-Credits $usedNum
+            $limit = Format-Credits $limitNum
             $pct = [math]::Floor([double](Coalesce $usage.extra_usage.utilization 0))
             $color = Get-UsageColor $pct
-            return "${sep}${white}extra${reset} ${color}`$${used}/`$${limit}${reset}"
+            return "${white}extra${reset} ${color}`$${used}/`$${limit}${reset}"
         } else {
-            return "${sep}${white}extra${reset} ${green}enabled${reset}"
+            return "${white}extra${reset} ${green}enabled${reset}"
         }
     } catch {
-        return ""
+        return $placeholder
     }
 }
 
@@ -448,27 +476,37 @@ if ($usageData) {
     } catch {}
 }
 
+# 5h/7d cell pieces + the extra cell. Defaults are the no-data placeholders;
+# branches overwrite. $fhTime/$sdTime include their leading '@'; $sdPrefix is the
+# weekday ('' for 5h).
+$fhPctTxt = "-"; $fhColor = $dim; $fhTime = ""
+$sdPctTxt = "-"; $sdColor = $dim; $sdPrefix = ""; $sdTime = ""
+$extraCell = "${dim}-${reset}"
+
 if ($effectiveBuiltin) {
     # ---- Use rate_limits data provided directly by Claude Code in JSON input ----
     # resets_at values are Unix epoch integers in this source
     if ($null -ne $builtinFiveHourPct) {
         $fiveHourPct = [math]::Floor([double]$builtinFiveHourPct)
-        $fiveHourColor = Get-UsageColor $fiveHourPct
-        $out += "${sep}${white}5h${reset} ${fiveHourColor}${fiveHourPct}%${reset}"
+        $fhPctTxt = "${fiveHourPct}%"
+        $fhColor = Get-UsageColor $fiveHourPct
         $fiveHourReset = Format-EpochResetTime $builtinFiveHourReset "time"
-        if ($fiveHourReset) { $out += " ${dim}@${fiveHourReset}${reset}" }
+        if ($fiveHourReset) { $fhTime = "@${fiveHourReset}" }
     }
 
     if ($null -ne $builtinSevenDayPct) {
         $sevenDayPct = [math]::Floor([double]$builtinSevenDayPct)
-        $sevenDayColor = Get-UsageColor $sevenDayPct
-        $out += "${sep}${white}7d${reset} ${sevenDayColor}${sevenDayPct}%${reset}"
+        $sdPctTxt = "${sevenDayPct}%"
+        $sdColor = Get-UsageColor $sevenDayPct
         $sevenDayReset = Format-EpochResetTime $builtinSevenDayReset "datetime"
-        if ($sevenDayReset) { $out += " ${dim}${sevenDayReset}${reset}" }
+        if ($sevenDayReset) {
+            $sdPrefix = ($sevenDayReset -split '@')[0]
+            $sdTime = "@" + ($sevenDayReset -split '@')[1]
+        }
     }
 
-    # Render extra_usage from API cache (stdin rate_limits doesn't expose it)
-    $out += Format-ExtraUsage $parsedUsage
+    # Compute the extra cell from the API cache (stdin rate_limits doesn't expose it)
+    $extraCell = Format-ExtraUsage $parsedUsage
 
     # Cache builtin values so they're available as fallback when API is unavailable.
     # Convert epoch resets_at to ISO 8601 for compatibility with the API-format cache parser.
@@ -504,29 +542,37 @@ if ($effectiveBuiltin) {
     try {
         # ---- 5-hour (current) ----
         $fiveHourPct = [math]::Floor([double](Coalesce $parsedUsage.five_hour.utilization 0))
-        $fiveHourResetIso = $parsedUsage.five_hour.resets_at
-        $fiveHourReset = Format-ResetTime $fiveHourResetIso "time"
-        $fiveHourColor = Get-UsageColor $fiveHourPct
-
-        $out += "${sep}${white}5h${reset} ${fiveHourColor}${fiveHourPct}%${reset}"
-        if ($fiveHourReset) { $out += " ${dim}@${fiveHourReset}${reset}" }
+        $fiveHourReset = Format-ResetTime $parsedUsage.five_hour.resets_at "time"
+        $fhPctTxt = "${fiveHourPct}%"
+        $fhColor = Get-UsageColor $fiveHourPct
+        if ($fiveHourReset) { $fhTime = "@${fiveHourReset}" }
 
         # ---- 7-day (weekly) ----
         $sevenDayPct = [math]::Floor([double](Coalesce $parsedUsage.seven_day.utilization 0))
-        $sevenDayResetIso = $parsedUsage.seven_day.resets_at
-        $sevenDayReset = Format-ResetTime $sevenDayResetIso "datetime"
-        $sevenDayColor = Get-UsageColor $sevenDayPct
+        $sevenDayReset = Format-ResetTime $parsedUsage.seven_day.resets_at "datetime"
+        $sdPctTxt = "${sevenDayPct}%"
+        $sdColor = Get-UsageColor $sevenDayPct
+        if ($sevenDayReset) {
+            $sdPrefix = ($sevenDayReset -split '@')[0]
+            $sdTime = "@" + ($sevenDayReset -split '@')[1]
+        }
 
-        $out += "${sep}${white}7d${reset} ${sevenDayColor}${sevenDayPct}%${reset}"
-        if ($sevenDayReset) { $out += " ${dim}${sevenDayReset}${reset}" }
-
-        $out += Format-ExtraUsage $parsedUsage
+        $extraCell = Format-ExtraUsage $parsedUsage
     } catch {}
 } else {
-    # No valid usage data — show placeholders (mirrors statusline.sh's terminal else branch).
-    $out += "${sep}${white}5h${reset} ${dim}-${reset}"
-    $out += "${sep}${white}7d${reset} ${dim}-${reset}"
+    # No valid usage data — the '-' placeholder defaults above stand.
 }
+
+# ---- Compose the 5h/7d cells with internal %/@ alignment ----
+# Right-align the percent strings to a shared width, and pad-left the pre-'@'
+# fragment (always empty for 5h, the weekday for 7d) so the two '@'s stack. Widths
+# derive from the actual values — a 3-digit 100% or a '-' placeholder self-adjusts.
+$pctW = [math]::Max($fhPctTxt.Length, $sdPctTxt.Length)
+$preW = $sdPrefix.Length
+$fiveCell = "${white}5h${reset} " + (' ' * ($pctW - $fhPctTxt.Length)) + "${fhColor}${fhPctTxt}${reset}"
+if ($fhTime) { $fiveCell += " " + (' ' * $preW) + "${dim}${fhTime}${reset}" }
+$sevenCell = "${white}7d${reset} " + (' ' * ($pctW - $sdPctTxt.Length)) + "${sdColor}${sdPctTxt}${reset}"
+if ($sdTime) { $sevenCell += " ${dim}${sdPrefix}${sdTime}${reset}" }
 
 # ===== Update check (cached, 24h TTL) =====
 # Set STATUSLINE_CHECK_UPDATES=false to disable the update check (no network calls).
@@ -580,12 +626,33 @@ if ($env:STATUSLINE_CHECK_UPDATES -cne "false") {
     }
 }
 
-# Append CLI version as last segment
-if ($cliVersion) {
-    $out += " ${dim}|${reset} ${orange}v${cliVersion}${reset}"
+# ===== Assemble the two-line grid =====
+# Column width = max visible width of the column's two cells; every cell except the
+# last of its row pads right with PLAIN spaces to that width, so the ' | ' separators
+# stack vertically. Row 2 always has four cells; row 1 may stop after the 5h cell.
+$r1 = @($modelCell, $tokensCell, $fiveCell)
+if ($cwdCell) { $r1 += $cwdCell }
+$r2 = @($versionCell, $extraCell, $sevenCell, $worktreeCell)
+
+$line1 = ""; $line2 = ""
+$maxCols = [math]::Max($r1.Count, $r2.Count)
+for ($i = 0; $i -lt $maxCols; $i++) {
+    $c1 = if ($i -lt $r1.Count) { $r1[$i] } else { $null }
+    $c2 = if ($i -lt $r2.Count) { $r2[$i] } else { $null }
+    $w1 = if ($null -ne $c1) { Get-VisibleLength $c1 } else { 0 }
+    $w2 = if ($null -ne $c2) { Get-VisibleLength $c2 } else { 0 }
+    $w = [math]::Max($w1, $w2)
+    if ($null -ne $c1) {
+        if ($i -lt ($r1.Count - 1)) { $line1 += $c1 + (' ' * ($w - $w1)) + $sep }
+        else { $line1 += $c1 }
+    }
+    if ($null -ne $c2) {
+        if ($i -lt ($r2.Count - 1)) { $line2 += $c2 + (' ' * ($w - $w2)) + $sep }
+        else { $line2 += $c2 }
+    }
 }
 
 # Output
-Write-Host -NoNewline "$out$updateLine"
+Write-Host -NoNewline "$line1`n$line2$updateLine"
 
 exit 0
