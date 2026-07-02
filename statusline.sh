@@ -2,12 +2,14 @@
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 # Two lines, pipe-aligned grid (column width = max visible width of its two cells):
-#   Model [✦] effort | tokens (%used) | 5h N%    @reset | cwd@branch (+N -M)
-#   vVERSION         | extra $x/$y    | 7d N% Day@reset | worktree
-# Cells are positional: row 2 always renders all four (dim '-' placeholders for
-# unknown version / disabled extra / absent worktree); row 1's cwd cell is omitted
-# when there is no cwd. The 5h/7d cells right-align their percents and stack their
-# '@'s. The ✦ between model and effort appears only when thinking.enabled is true.
+#   Model [✦] effort | tokens (%used) | 5h N%    @reset | [+added]   | cwd@branch
+#   vVERSION         | extra $x/$y    | 7d N% Day@reset | [-removed] | worktree
+# Cells are positional: row 2 always renders version/extra/7d/worktree (dim '-'
+# placeholders for unknown version / disabled extra / absent worktree); the +added/
+# -removed pair is inserted into BOTH rows together, only while the tree is dirty;
+# row 1's cwd cell is omitted when there is no cwd. The 5h/7d cells right-align their
+# percents and stack their '@'s. The ✦ between model and effort appears only when
+# thinking.enabled is true.
 
 set -f  # disable globbing
 shopt -s extglob  # extended globs in ${var//pat/} — visible_len strips SGR escapes with *([0-9;])
@@ -221,14 +223,21 @@ model_cell+=" ${effort_part}"
 # (the documented-preferred alias); fall back to the top-level .cwd for older CLIs.
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // empty')
 cwd_cell=""
+diff_added_cell=""
+diff_removed_cell=""
 if [ -n "$cwd" ]; then
     display_dir="${cwd##*/}"
     git_branch=$(git -C "${cwd}" rev-parse --abbrev-ref HEAD 2>/dev/null)
     cwd_cell="${cyan}${display_dir}${reset}"
     if [ -n "$git_branch" ]; then
         cwd_cell+="${dim}@${reset}${green}${git_branch}${reset}"
-        git_stat=$(git -C "${cwd}" diff --numstat 2>/dev/null | awk '{a+=$1; d+=$2} END {if (a+d>0) printf "+%d -%d", a, d}')
-        [ -n "$git_stat" ] && cwd_cell+=" ${dim}(${reset}${green}${git_stat%% *}${reset} ${red}${git_stat##* }${reset}${dim})${reset}"
+        # Unstaged line changes, tracked files only — rendered as a stacked column
+        # pair (+added over -removed) that exists only while the tree is dirty.
+        git_stat=$(git -C "${cwd}" diff --numstat 2>/dev/null | awk '{a+=$1; d+=$2} END {if (a+d>0) printf "%d %d", a, d}')
+        if [ -n "$git_stat" ]; then
+            diff_added_cell="${green}+${git_stat%% *}${reset}"
+            diff_removed_cell="${red}-${git_stat##* }${reset}"
+        fi
     fi
 fi
 
@@ -663,8 +672,15 @@ fi
 # last of its row pads right with PLAIN spaces to that width, so the ' | ' separators
 # stack vertically. Row 2 always has four cells; row 1 may stop after the 5h cell.
 r1=( "$model_cell" "$tokens_cell" "$five_cell" )
+r2=( "$version_cell" "$extra_cell" "$seven_cell" )
+# The +added/-removed pair is inserted into BOTH rows together (never one alone),
+# so cwd@branch and worktree stay column partners whether or not it appears.
+if [ -n "$diff_added_cell" ]; then
+    r1+=( "$diff_added_cell" )
+    r2+=( "$diff_removed_cell" )
+fi
 [ -n "$cwd_cell" ] && r1+=( "$cwd_cell" )
-r2=( "$version_cell" "$extra_cell" "$seven_cell" "$worktree_cell" )
+r2+=( "$worktree_cell" )
 
 line1=""
 line2=""

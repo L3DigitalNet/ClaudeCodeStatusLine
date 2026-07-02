@@ -3,12 +3,14 @@
 
 $VERSION = "1.6.0"
 # Two lines, pipe-aligned grid (column width = max visible width of its two cells):
-#   Model [✦] effort | tokens (%used) | 5h N%    @reset | cwd@branch (+N -M)
-#   vVERSION         | extra $x/$y    | 7d N% Day@reset | worktree
-# Cells are positional: row 2 always renders all four (dim '-' placeholders for
-# unknown version / disabled extra / absent worktree); row 1's cwd cell is omitted
-# when there is no cwd. The 5h/7d cells right-align their percents and stack their
-# '@'s. The ✦ between model and effort appears only when thinking.enabled is true.
+#   Model [✦] effort | tokens (%used) | 5h N%    @reset | [+added]   | cwd@branch
+#   vVERSION         | extra $x/$y    | 7d N% Day@reset | [-removed] | worktree
+# Cells are positional: row 2 always renders version/extra/7d/worktree (dim '-'
+# placeholders for unknown version / disabled extra / absent worktree); the +added/
+# -removed pair is inserted into BOTH rows together, only while the tree is dirty;
+# row 1's cwd cell is omitted when there is no cwd. The 5h/7d cells right-align their
+# percents and stack their '@'s. The ✦ between model and effort appears only when
+# thinking.enabled is true.
 
 # Read input from stdin
 $input = @($Input) -join "`n"
@@ -221,6 +223,8 @@ $modelCell += " ${effortPart}"
 # (the documented-preferred alias); fall back to the top-level .cwd for older CLIs.
 $cwd = if ($data.workspace.current_dir) { $data.workspace.current_dir } else { $data.cwd }
 $cwdCell = ""
+$diffAddedCell = ""
+$diffRemovedCell = ""
 if ($cwd) {
     $displayDir = Split-Path $cwd -Leaf
     $gitBranch = $null
@@ -231,6 +235,8 @@ if ($cwd) {
     if ($gitBranch) {
         $cwdCell += "${dim}@${reset}${green}${gitBranch}${reset}"
         try {
+            # Unstaged line changes, tracked files only — rendered as a stacked column
+            # pair (+added over -removed) that exists only while the tree is dirty.
             $numstat = git -C $cwd diff --numstat 2>$null
             if ($numstat) {
                 $added = 0; $deleted = 0
@@ -240,7 +246,8 @@ if ($cwd) {
                     if ($parts[1] -match '^\d+$') { $deleted += [int]$parts[1] }
                 }
                 if (($added + $deleted) -gt 0) {
-                    $cwdCell += " ${dim}(${reset}${green}+${added}${reset} ${red}-${deleted}${reset}${dim})${reset}"
+                    $diffAddedCell = "${green}+${added}${reset}"
+                    $diffRemovedCell = "${red}-${deleted}${reset}"
                 }
             }
         } catch {}
@@ -631,8 +638,15 @@ if ($env:STATUSLINE_CHECK_UPDATES -cne "false") {
 # last of its row pads right with PLAIN spaces to that width, so the ' | ' separators
 # stack vertically. Row 2 always has four cells; row 1 may stop after the 5h cell.
 $r1 = @($modelCell, $tokensCell, $fiveCell)
+$r2 = @($versionCell, $extraCell, $sevenCell)
+# The +added/-removed pair is inserted into BOTH rows together (never one alone),
+# so cwd@branch and worktree stay column partners whether or not it appears.
+if ($diffAddedCell) {
+    $r1 += $diffAddedCell
+    $r2 += $diffRemovedCell
+}
 if ($cwdCell) { $r1 += $cwdCell }
-$r2 = @($versionCell, $extraCell, $sevenCell, $worktreeCell)
+$r2 += $worktreeCell
 
 $line1 = ""; $line2 = ""
 $maxCols = [math]::Max($r1.Count, $r2.Count)

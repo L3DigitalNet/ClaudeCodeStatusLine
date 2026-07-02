@@ -19,14 +19,18 @@ terminals. Colors are unchanged.
   two cells (content-based; no terminal-width detection).
 
   ```text
-  Sonnet 5 ✦ high | 435k/1M (44%) | 5h  4%    @16:40 | ClaudeCodeStatusLine@main
-  v2.1.198        | extra $0/$25  | 7d 12% Sun@19:00 | my-worktree
+  Sonnet 5 ✦ high | 435k/1M (44%) | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLine@main
+  v2.1.198        | extra $0/$25  | 7d 12% Sun@19:00 | -3  | my-worktree
   ```
 
   Row 1: model with the ✦ thinking marker and effort level (one fused cell), tokens,
-  5-hour usage, cwd@branch. Row 2: CLI version, extra usage, 7-day usage, worktree.
-  Cells with no data render a dim `-` so the grid stays aligned; the cwd cell is
-  simply omitted when Claude Code supplies no working directory.
+  5-hour usage, lines added, cwd@branch. Row 2: CLI version, extra usage, 7-day usage,
+  lines removed, worktree. Cells with no data render a dim `-` so the grid stays
+  aligned; the cwd cell is simply omitted when Claude Code supplies no working
+  directory.
+- **Line changes get their own column:** the unstaged `(+N -M)` suffix that rode inside
+  the cwd cell is now a stacked column of its own (green `+added` over red `-removed`,
+  no parentheses). As before, it appears only while the tree is dirty.
 - **Thinking marker position:** the `✦` now sits between the model name and the effort
   word (`Sonnet 5 ✦ high`); previously it was appended after the effort word.
 - **5h/7d internal alignment:** the two usage cells right-align their percentages and

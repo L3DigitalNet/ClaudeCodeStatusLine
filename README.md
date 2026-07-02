@@ -13,8 +13,8 @@ A custom status line for [Claude Code](https://claude.com/claude-code) that disp
 The status line is a two-line grid. Pipes align vertically, each column sizing itself to the wider of its two cells:
 
 ```text
-Sonnet 5 ✦ high | 435k/1M (44%) | 5h  4%    @16:40 | ClaudeCodeStatusLine@main
-v2.1.198        | extra $0/$25  | 7d 12% Sun@19:00 | my-worktree
+Sonnet 5 ✦ high | 435k/1M (44%) | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLine@main
+v2.1.198        | extra $0/$25  | 7d 12% Sun@19:00 | -3  | my-worktree
 ```
 
 | Cell | Position | Description |
@@ -22,11 +22,12 @@ v2.1.198        | extra $0/$25  | 7d 12% Sun@19:00 | my-worktree
 | **Model + Effort** | row 1, col 1 | Model name (a `(1M context)` suffix collapses to `1M`), a `✦` when extended thinking is enabled, and the reasoning effort level (`low`, `med`, `high`, `xhigh`, `max`) |
 | **Tokens** | row 1, col 2 | Used / total context-window tokens (% used) |
 | **5h** | row 1, col 3 | 5-hour rate-limit usage percentage and reset time |
-| **CWD@Branch** | row 1, col 4 | Current folder name, git branch, and unstaged line changes (+/-, tracked files only: staged and untracked changes aren't counted); omitted when Claude Code supplies no working directory |
+| **Lines +/−** | col 4 | Unstaged line changes in tracked files, `+added` stacked over `-removed` (staged and untracked changes aren't counted). The column appears only while the tree is dirty |
+| **CWD@Branch** | row 1, last | Current folder name and git branch; omitted when Claude Code supplies no working directory |
 | **Version** | row 2, col 1 | Installed Claude Code CLI version, or `-` when unknown |
 | **Extra** | row 2, col 2 | Extra-usage credits spent / limit whenever extra usage is enabled (whole dollars drop the cents: `$0/$25`); `-` when disabled |
 | **7d** | row 2, col 3 | 7-day rate-limit usage percentage and reset time |
-| **Worktree** | row 2, col 4 | Worktree name in `--worktree` sessions; `-` otherwise |
+| **Worktree** | row 2, last | Worktree name in `--worktree` sessions; `-` otherwise |
 | **Update** | line 3 | Appears when a new release is available (checked every 24h) |
 
 Within the 5h/7d column the percentages right-align and the `@` reset markers stack, so the two rows read as one table.
