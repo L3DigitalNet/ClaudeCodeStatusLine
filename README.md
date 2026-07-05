@@ -15,24 +15,25 @@ Both lines render below the Claude Code input box; the pipes stay aligned as the
 The status line is a two-line grid. Pipes align vertically, each column sizing itself to the wider of its two cells:
 
 ```text
-Opus 4.8 1M ✦ high | 435k/1M 44% | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLine@main
-v2.1.198    $0/$25 | Fable   79% | 7d 12% Sun@19:00 | -3  | my-worktree
+Opus 4.8 1M ✦ high | 435k/1M 44% | 5h  4%    @16:40 | +12 | hw-radar@main:my-worktree
+v2.1.198    $0/$25 | Fable   79% | 7d 12% Sun@19:00 | -3  | ~/projects/hw-radar
 ```
 
 (The token and Fable percentages right-align to column 2's edge so they stack vertically,
-and the extra-usage dollars right-align to column 1's edge, flush under the model name.)
+and the effort word and extra-usage dollars right-align to column 1's edge, so `effort`
+sits flush over the dollars regardless of how wide the credits figure grows.)
 
 | Cell | Position | Description |
 |------|----------|-------------|
-| **Model + Effort** | row 1, col 1 | Model name (a `(1M context)` suffix collapses to `1M`), a `✦` when extended thinking is enabled, and the reasoning effort level (`low`, `med`, `high`, `xhigh`, `max`) |
+| **Model + Effort** | row 1, col 1 | Model name (a `(1M context)` suffix collapses to `1M`), a `✦` when extended thinking is enabled, and the reasoning effort level (`low`, `med`, `high`, `xhigh`, `max`). The effort word right-aligns to the column edge, stacking over the extra-usage dollars below it |
 | **Tokens** | row 1, col 2 | Used / total context-window tokens and % used (the % right-aligns to the column edge, stacking under the Fable %) |
 | **5h** | row 1, col 3 | 5-hour rate-limit usage percentage and reset time |
 | **Lines +/−** | col 4 | Unstaged line changes in tracked files, `+added` stacked over `-removed` (staged and untracked changes aren't counted). The column appears only while the tree is dirty |
-| **CWD@Branch** | row 1, last | Current folder name and git branch; omitted when Claude Code supplies no working directory |
+| **CWD@Branch:Worktree** | row 1, last | Current folder name and git branch; in `--worktree` sessions the worktree name follows the branch as `@branch:worktree`. Omitted (with its row-2 path partner) when Claude Code supplies no working directory |
 | **Version + Extra** | row 2, col 1 | Installed Claude Code CLI version (or `-` when unknown), with extra-usage credits `$spent/$limit` right-aligned to the column edge whenever extra usage is enabled (whole dollars drop the cents: `$0/$25`) |
-| **Fable** | row 2, col 2 | Fable-scoped weekly usage percentage (right-aligned to the column edge, under the token %), color-coded like the other limits; `-` when no Fable weekly limit is active (e.g. accounts without Fable, or after Fable moves to metered credits) |
+| **Fable** | row 2, col 2 | Fable-scoped weekly usage percentage (right-aligned to the column edge, under the token %), color-coded like the other limits. When no Fable weekly limit is active — e.g. accounts without Fable, or while Fable is off subscription plans (from 2026-07-07) pending its return — the `Fable` label stays and the percentage becomes a `😢` rather than vanishing, holding the column until Fable comes back |
 | **7d** | row 2, col 3 | 7-day rate-limit usage percentage and reset time |
-| **Worktree** | row 2, last | Worktree name in `--worktree` sessions; `-` otherwise |
+| **Path** | row 2, last | Full working-directory path with your home directory collapsed to `~` (e.g. `~/projects/hw-radar`); shares the trailing column with row 1's folder name and omits with it when there is no working directory |
 | **Update** | line 3 | Appears when a new release is available (checked every 24h) |
 
 Within the 5h/7d column the percentages right-align and the `@` reset markers stack, so the two rows read as one table.

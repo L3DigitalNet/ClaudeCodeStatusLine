@@ -8,6 +8,39 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both implementations — `statusline.sh` (Bash) and `statusline.ps1` (PowerShell) — are
 functional mirrors; every entry below applies to both unless noted.
 
+## [1.8.0] - 2026-07-05
+
+Reworks the trailing column so the working directory is always visible, moves the worktree
+name onto the branch, and fixes the effort word drifting off the pipe when extra-usage
+credits are high.
+
+```text
+Opus 4.8 1M ✦ high | 435k/1M 44% | 5h  4%    @16:40 | +12 | hw-radar@main:my-worktree
+v2.1.198    $0/$25 | Fable   79% | 7d 12% Sun@19:00 | -3  | ~/projects/hw-radar
+```
+
+### Fixed
+- **Effort word right-aligns to column 1's edge (both):** the reasoning effort now sits flush
+  against the first ` | `, stacking directly over the extra-usage dollars below it. Previously
+  a wide `$spent/$limit` figure widened column 1 and the generic padding was appended *after*
+  the effort word, pushing it away from the pipe. The padding now falls between the model name
+  and the effort — the same right-align treatment the dollars, token %, and Fable % already use.
+
+### Changed
+- **Worktree name moved onto the branch (both):** in `--worktree` sessions the worktree name
+  now rides on the end of row 1's branch as `@branch:worktree` (the colon and name hide together
+  when there is no worktree), instead of occupying its own cell in row 2.
+- **Row 2's trailing cell is now the full working-directory path (both):** it shows the complete
+  path with your home directory collapsed to `~` (e.g. `~/projects/hw-radar`), replacing the
+  standalone worktree cell. It shares the trailing column with row 1's folder name, so both cells
+  appear together or omit together when there is no working directory — row 2 no longer carries a
+  `-` placeholder there.
+- **Fable cell shows `😢` instead of `-` when unavailable (both):** Fable leaves subscription plans
+  on 2026-07-07 and is expected to return later. While its weekly limit is absent, the `Fable`
+  label stays put and the percentage becomes a `😢` rather than collapsing to a dim `-`, so the cell
+  holds its column until Fable comes back. The emoji is treated as two terminal columns wide, so it
+  right-aligns to the column edge exactly like a percentage and the pipes stay aligned.
+
 ## [1.7.1] - 2026-07-05
 
 ### Fixed
