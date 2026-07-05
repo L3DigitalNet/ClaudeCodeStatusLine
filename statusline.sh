@@ -2,10 +2,12 @@
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 # Two lines, pipe-aligned grid (column width = max visible width of its two cells):
-#   Model [✦] effort | tokens %used   | 5h N%    @reset | [+added]   | cwd@branch
-#   vVERSION         | extra $x/$y    | 7d N% Day@reset | [-removed] | worktree
-# Cells are positional: row 2 always renders version/extra/7d/worktree (dim '-'
-# placeholders for unknown version / disabled extra / absent worktree); the +added/
+#   Model [✦] effort  | tokens %used | 5h N%    @reset | [+added]   | cwd@branch
+#   vVERSION [$x/$y]  | Fable N%     | 7d N% Day@reset | [-removed] | worktree
+# Cells are positional: row 2 always renders version/Fable/7d/worktree (dim '-'
+# placeholders for unknown version / absent Fable weekly / absent worktree); the extra-
+# usage '$used/$limit' rides in the version cell when enabled; Fable is the Fable-scoped
+# weekly usage % (col 2) or a dim '-'; the +added/
 # -removed pair is inserted into BOTH rows together, only while the tree is dirty;
 # row 1's cwd cell is omitted when there is no cwd. The 5h/7d cells right-align their
 # percents and stack their '@'s. The ✦ between model and effort appears only when
@@ -13,7 +15,7 @@
 
 set -f  # disable globbing
 shopt -s extglob  # extended globs in ${var//pat/} — visible_len strips SGR escapes with *([0-9;])
-VERSION="1.6.0"
+VERSION="1.7.0"
 
 input=$(cat)
 

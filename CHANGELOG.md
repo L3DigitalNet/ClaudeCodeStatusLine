@@ -8,6 +8,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both implementations — `statusline.sh` (Bash) and `statusline.ps1` (PowerShell) — are
 functional mirrors; every entry below applies to both unless noted.
 
+## [1.7.0] - 2026-07-04
+
+Adds a **Fable weekly usage** cell so you can see how close you are to the separate
+Fable-scoped weekly limit — distinct from the all-model 7-day cap — without opening
+`/usage`.
+
+```text
+Sonnet 5 ✦ high | 435k/1M 44% | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLine@main
+v2.1.198 $0/$25 | Fable 79%   | 7d 12% Sun@19:00 | -3  | my-worktree
+```
+
+### Added
+- **Fable weekly usage cell (row 2, col 2):** the Fable-scoped weekly usage percentage,
+  floored and color-coded like the 5h/7d cells. It reads the `limits[]` array of the
+  `/api/oauth/usage` response (the model-scoped weekly limits Anthropic now exposes there;
+  the older `seven_day_*` sibling keys are all null). Shows a dim `-` when no Fable weekly
+  limit is active — accounts without Fable access, or once Fable moves to metered credits.
+
+### Changed
+- **Extra-usage credits moved into the version cell (row 2, col 1):** `v2.1.198 $0/$25`
+  instead of a standalone `extra $0/$25` cell — freeing column 2 for the Fable meter. The
+  layout stays five columns wide; nothing else shifts. When extra usage is disabled the
+  version renders alone.
+
+### Fixed
+- **`limits[]` cache preservation (both):** the built-in `rate_limits` path rewrote the
+  usage cache on every render without the `limits[]` array, which would have flickered the
+  Fable cell to `-` on cached renders (<60s apart). The rewrite now preserves `limits[]`
+  alongside `extra_usage`.
+
 ## [1.6.0] - 2026-07-02
 
 The status line now renders as two lines instead of one, making it readable on narrower
