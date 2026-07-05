@@ -443,20 +443,19 @@ $sep = " ${dim}|${reset} "
 # defaults to a dim '-' (disabled / no data); shows dollar figures whenever
 # is_enabled, INCLUDING a $0 month — the old hide-at-$0.00 rule is gone because a
 # grid cell cannot vanish. The grid assembler owns separators; no leading ' | '.
+# Compute the extra-usage dollars FRAGMENT (row 2, col 1 — appended to $versionCell).
+# Returns a colored "$used/$limit" when enabled + numeric; a "${green}enabled${reset}"
+# marker when enabled but unparseable; "" otherwise (nothing gets appended to the version).
 function Format-ExtraUsage($usage) {
-    $placeholder = "${dim}-${reset}"
-    if (-not $usage) { return $placeholder }
+    if (-not $usage) { return "" }
     try {
-        $enabled = $usage.extra_usage.is_enabled
-        if ($enabled -ne $true) { return $placeholder }
+        if ($usage.extra_usage.is_enabled -ne $true) { return "" }
 
         $usedRaw = $usage.extra_usage.used_credits
         $limitRaw = $usage.extra_usage.monthly_limit
 
-        # Show dollar figures only when both credit values are numeric. When they are
-        # absent or malformed, fall back to a plain "enabled" marker rather than the
-        # '-' placeholder. Parse with invariant culture so the decimal is always '.',
-        # matching Bash's LC_NUMERIC=C awk (comma-decimal locales would render "0,00").
+        # Parse with invariant culture so the decimal is always '.', matching Bash's
+        # LC_NUMERIC=C awk (comma-decimal locales would render "0,00").
         $inv = [System.Globalization.CultureInfo]::InvariantCulture
         $usedNum = 0.0
         $limitNum = 0.0
@@ -466,13 +465,27 @@ function Format-ExtraUsage($usage) {
             $limit = Format-Credits $limitNum
             $pct = [math]::Floor([double](Coalesce $usage.extra_usage.utilization 0))
             $color = Get-UsageColor $pct
-            return "${white}extra${reset} ${color}`$${used}/`$${limit}${reset}"
+            return "${color}`$${used}/`$${limit}${reset}"
         } else {
-            return "${white}extra${reset} ${green}enabled${reset}"
+            return "${green}enabled${reset}"
         }
     } catch {
-        return $placeholder
+        return ""
     }
+}
+
+# Fable weekly usage cell (row 2, col 2) from the API response limits[] array. Hardcoded to
+# display_name=="Fable"; dim '-' when absent. @() forces array iteration over a scalar limits.
+function Format-FableCell($usage) {
+    $placeholder = "${dim}-${reset}"
+    if (-not $usage) { return $placeholder }
+    try {
+        $entry = @($usage.limits) | Where-Object { $_.scope.model.display_name -eq 'Fable' } | Select-Object -First 1
+        if (-not $entry -or $null -eq $entry.percent) { return $placeholder }
+        $pct = [math]::Floor([double]$entry.percent)
+        $color = Get-UsageColor $pct
+        return "${white}Fable${reset} ${color}${pct}%${reset}"
+    } catch { return $placeholder }
 }
 
 # Parse usage_data once (used by both branches below for extra_usage)
@@ -511,9 +524,6 @@ if ($effectiveBuiltin) {
             $sdTime = "@" + ($sevenDayReset -split '@')[1]
         }
     }
-
-    # Compute the extra cell from the API cache (stdin rate_limits doesn't expose it)
-    $extraCell = Format-ExtraUsage $parsedUsage
 
     # Cache builtin values so they're available as fallback when API is unavailable.
     # Convert epoch resets_at to ISO 8601 for compatibility with the API-format cache parser.
@@ -576,11 +586,16 @@ if ($effectiveBuiltin) {
             $sdTime = "@" + ($sevenDayReset -split '@')[1]
         }
 
-        $extraCell = Format-ExtraUsage $parsedUsage
     } catch {}
 } else {
     # No valid usage data — the '-' placeholder defaults above stand.
 }
+
+# extra-usage dollars ride in the version cell (row 2, col 1); Fable weekly takes col 2.
+# Both read the API response only — compute once here after every branch populated $parsedUsage.
+$extraDollars = Format-ExtraUsage $parsedUsage
+if ($extraDollars) { $versionCell = "${versionCell}  ${extraDollars}" }
+$extraCell = Format-FableCell $parsedUsage
 
 # ---- Compose the 5h/7d cells with internal %/@ alignment ----
 # Right-align the percent strings to a shared width, and pad-left the pre-'@'
