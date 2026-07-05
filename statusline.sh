@@ -144,8 +144,8 @@ cache_create=$(echo "$input" | jq -r '.context_window.current_usage.cache_creati
 cache_read=$(echo "$input" | jq -r '.context_window.current_usage.cache_read_input_tokens // 0')
 current=$(( input_tokens + cache_create + cache_read ))
 
-used_tokens=$(format_tokens $current)
-total_tokens=$(format_tokens $size)
+used_tokens=$(format_tokens "$current")
+total_tokens=$(format_tokens "$size")
 
 # Percent of context used. Claude Code now ships context_window.used_percentage
 # precomputed (input-only formula — excludes output_tokens — which matches our own
