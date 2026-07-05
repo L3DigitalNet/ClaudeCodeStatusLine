@@ -530,6 +530,24 @@ render_extra_usage() {
     fi
 }
 
+# Fable weekly usage cell (row 2, col 2) — the Fable-scoped weekly limit from the API
+# response's limits[] array (never stdin). Hardcoded to display_name=="Fable"; a future
+# scoped model won't hijack this cell. Dim '-' when absent (post-credits switch, non-Fable
+# accounts, or no API data). Percent floored + colored like the 5h/7d cells; no reset time
+# (it shares the 7d window, already shown in col 3).
+render_fable() {
+    local data="$1"
+    extra_cell="${dim}-${reset}"
+    [ -z "$data" ] && return
+    local pct color
+    pct=$(echo "$data" | jq -r '.limits[]? | select((.scope.model.display_name // "")=="Fable") | .percent' 2>/dev/null | head -n1)
+    [ -z "$pct" ] && return
+    [[ "$pct" =~ ^[0-9]+([.][0-9]+)?$ ]] || return
+    pct=$(floor_pct "$pct")
+    color=$(usage_color "$pct")
+    extra_cell="${white}Fable${reset} ${color}${pct}%${reset}"
+}
+
 # 5h/7d cell pieces + the extra cell. Defaults are the no-data placeholders;
 # branches overwrite. fh_time/sd_time include their leading '@'; sd_prefix is the
 # weekday ('' for 5h).
@@ -617,6 +635,7 @@ fi
 # every branch has populated usage_data — regardless of which usage source rendered 5h/7d.
 render_extra_usage "$usage_data"
 [ -n "$extra_dollars" ] && version_cell="${version_cell}  ${extra_dollars}"
+render_fable "$usage_data"
 
 # ---- Compose the 5h/7d cells with internal %/@ alignment ----
 # Right-align the percent strings to a shared width, and pad-left the pre-'@'
