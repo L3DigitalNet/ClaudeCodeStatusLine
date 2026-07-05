@@ -585,10 +585,14 @@ if $effective_builtin; then
     fi
     _extra_json=$(echo "$usage_data" | jq -c '.extra_usage // null' 2>/dev/null)
     [ -z "$_extra_json" ] && _extra_json="null"
-    printf '{"five_hour":{"utilization":%s,"resets_at":%s},"seven_day":{"utilization":%s,"resets_at":%s},"extra_usage":%s}' \
+    # Preserve the model-scoped limits[] array (Fable weekly lives here) across the
+    # builtin-path rewrite; without it the Fable cell flickers to '-' on cached renders.
+    _limits_json=$(echo "$usage_data" | jq -c '.limits // null' 2>/dev/null)
+    [ -z "$_limits_json" ] && _limits_json="null"
+    printf '{"five_hour":{"utilization":%s,"resets_at":%s},"seven_day":{"utilization":%s,"resets_at":%s},"limits":%s,"extra_usage":%s}' \
         "${builtin_five_hour_pct:-0}" "$_fh_reset_json" \
         "${builtin_seven_day_pct:-0}" "$_sd_reset_json" \
-        "$_extra_json" > "$cache_file" 2>/dev/null
+        "$_limits_json" "$_extra_json" > "$cache_file" 2>/dev/null
 elif [ -n "$usage_data" ] && echo "$usage_data" | jq -e '.five_hour' >/dev/null 2>&1; then
     # ---- Fall back: API-fetched usage data ----
     # ---- 5-hour (current) ----

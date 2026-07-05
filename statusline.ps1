@@ -540,7 +540,19 @@ if ($effectiveBuiltin) {
             $extraJson = $parsedUsage.extra_usage | ConvertTo-Json -Depth 5 -Compress
         } catch {}
     }
-    $fallbackJson = "{`"five_hour`":{`"utilization`":$fhVal,`"resets_at`":$fhResetJson},`"seven_day`":{`"utilization`":$sdVal,`"resets_at`":$sdResetJson},`"extra_usage`":$extraJson}"
+    # Preserve the model-scoped limits[] array (Fable weekly) across the builtin rewrite,
+    # mirroring the Bash side. ConvertTo-Json collapses a 1-element array to a bare object;
+    # -AsArray would fix it but is PowerShell 6+ only and this script also targets Windows
+    # PowerShell 5.1, so serialize each element and re-bracket manually — an array on ALL
+    # versions, and it round-trips back to an iterable .limits under ConvertFrom-Json.
+    $limitsJson = "null"
+    if ($parsedUsage -and $parsedUsage.limits) {
+        try {
+            $elems = @($parsedUsage.limits) | ForEach-Object { $_ | ConvertTo-Json -Depth 6 -Compress }
+            $limitsJson = "[" + ($elems -join ",") + "]"
+        } catch {}
+    }
+    $fallbackJson = "{`"five_hour`":{`"utilization`":$fhVal,`"resets_at`":$fhResetJson},`"seven_day`":{`"utilization`":$sdVal,`"resets_at`":$sdResetJson},`"limits`":$limitsJson,`"extra_usage`":$extraJson}"
     $fallbackJson | Set-Content $cacheFile -Force
 } elseif ($parsedUsage -and $null -ne $parsedUsage.five_hour) {
     # ---- Fall back: API-fetched usage data ----
