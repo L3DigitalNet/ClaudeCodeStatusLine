@@ -16,12 +16,13 @@ Fable-scoped weekly limit — distinct from the all-model 7-day cap — without 
 
 ```text
 Opus 4.8 1M ✦ high | 435k/1M 44% | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLine@main
-v2.1.198    $0/$25 | Fable 79%   | 7d 12% Sun@19:00 | -3  | my-worktree
+v2.1.198    $0/$25 | Fable   79% | 7d 12% Sun@19:00 | -3  | my-worktree
 ```
 
 ### Added
 - **Fable weekly usage cell (row 2, col 2):** the Fable-scoped weekly usage percentage,
-  floored and color-coded like the 5h/7d cells. It reads the `limits[]` array of the
+  floored and color-coded like the 5h/7d cells. The percentage right-aligns to the column
+  edge (`Fable` stays left), sitting flush under the token percentage above it. It reads the `limits[]` array of the
   `/api/oauth/usage` response (the model-scoped weekly limits Anthropic now exposes there;
   the older `seven_day_*` sibling keys are all null). Shows a dim `-` when no Fable weekly
   limit is active — accounts without Fable access, or once Fable moves to metered credits.

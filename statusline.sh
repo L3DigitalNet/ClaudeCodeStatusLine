@@ -547,7 +547,17 @@ render_fable() {
     [[ "$pct" =~ ^[0-9]+([.][0-9]+)?$ ]] || return
     pct=$(floor_pct "$pct")
     color=$(usage_color "$pct")
-    extra_cell="${white}Fable${reset} ${color}${pct}%${reset}"
+    # Right-align the percent to column 2's RIGHT edge, 'Fable' stays left — padding goes
+    # BETWEEN the label and the percent. Column 2's width is max(tokens row 1, Fable row 2)
+    # and tokens_cell is the only row-1 cell there, so size it now and pre-expand (1-space
+    # minimum gap). 'Fable' is a fixed 5 visible chars, so no visible_len call on the label.
+    local pct_txt="${pct}%"
+    local lab_len=5 pl=${#pct_txt} tok gap target natural
+    tok=$(visible_len "${tokens_cell:-}")
+    natural=$(( lab_len + 1 + pl ))
+    target=$(( tok > natural ? tok : natural ))
+    gap=$(( target - lab_len - pl ))
+    extra_cell="${white}Fable${reset}$(printf '%*s' "$gap" '')${color}${pct_txt}${reset}"
 }
 
 # 5h/7d cell pieces + the extra cell. Defaults are the no-data placeholders;

@@ -478,7 +478,7 @@ function Format-ExtraUsage($usage) {
 
 # Fable weekly usage cell (row 2, col 2) from the API response limits[] array. Hardcoded to
 # display_name=="Fable"; dim '-' when absent. @() forces array iteration over a scalar limits.
-function Format-FableCell($usage) {
+function Format-FableCell($usage, $tokensCell) {
     $placeholder = "${dim}-${reset}"
     if (-not $usage) { return $placeholder }
     try {
@@ -486,7 +486,17 @@ function Format-FableCell($usage) {
         if (-not $entry -or $null -eq $entry.percent) { return $placeholder }
         $pct = [math]::Floor([double]$entry.percent)
         $color = Get-UsageColor $pct
-        return "${white}Fable${reset} ${color}${pct}%${reset}"
+        # Right-align the percent to column 2's edge; 'Fable' stays left, pad goes between
+        # (1-space minimum). Column 2's width is max(tokens row 1, Fable row 2) and tokensCell
+        # is the only row-1 cell there. 'Fable' is a fixed 5 visible chars. Mirrors Bash.
+        $pctTxt = "${pct}%"
+        $labLen = 5
+        $plen = $pctTxt.Length
+        $tok = Get-VisibleLength $tokensCell
+        $natural = $labLen + 1 + $plen
+        $target = [math]::Max($tok, $natural)
+        $gap = $target - $labLen - $plen
+        return "${white}Fable${reset}" + (' ' * $gap) + "${color}${pctTxt}${reset}"
     } catch { return $placeholder }
 }
 
@@ -609,7 +619,7 @@ if ($extraDollars) {
     $edGap = $edTarget - $edVlen - $edDlen
     $versionCell = $versionCell + (' ' * $edGap) + $extraDollars
 }
-$extraCell = Format-FableCell $parsedUsage
+$extraCell = Format-FableCell $parsedUsage $tokensCell
 
 # ---- Compose the 5h/7d cells with internal %/@ alignment ----
 # Right-align the percent strings to a shared width, and pad-left the pre-'@'

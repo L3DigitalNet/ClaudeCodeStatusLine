@@ -16,10 +16,11 @@ The status line is a two-line grid. Pipes align vertically, each column sizing i
 
 ```text
 Opus 4.8 1M ✦ high | 435k/1M 44% | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLine@main
-v2.1.198    $0/$25 | Fable 79%   | 7d 12% Sun@19:00 | -3  | my-worktree
+v2.1.198    $0/$25 | Fable   79% | 7d 12% Sun@19:00 | -3  | my-worktree
 ```
 
-(The extra-usage dollars right-align to column 1's edge, so they sit flush under the model.)
+(The extra-usage dollars and the Fable percentage right-align to their column edges, so
+they sit flush under the model name and the token percentage respectively.)
 
 | Cell | Position | Description |
 |------|----------|-------------|
@@ -29,7 +30,7 @@ v2.1.198    $0/$25 | Fable 79%   | 7d 12% Sun@19:00 | -3  | my-worktree
 | **Lines +/−** | col 4 | Unstaged line changes in tracked files, `+added` stacked over `-removed` (staged and untracked changes aren't counted). The column appears only while the tree is dirty |
 | **CWD@Branch** | row 1, last | Current folder name and git branch; omitted when Claude Code supplies no working directory |
 | **Version + Extra** | row 2, col 1 | Installed Claude Code CLI version (or `-` when unknown), with extra-usage credits `$spent/$limit` right-aligned to the column edge whenever extra usage is enabled (whole dollars drop the cents: `$0/$25`) |
-| **Fable** | row 2, col 2 | Fable-scoped weekly usage percentage, color-coded like the other limits; `-` when no Fable weekly limit is active (e.g. accounts without Fable, or after Fable moves to metered credits) |
+| **Fable** | row 2, col 2 | Fable-scoped weekly usage percentage (right-aligned to the column edge, under the token %), color-coded like the other limits; `-` when no Fable weekly limit is active (e.g. accounts without Fable, or after Fable moves to metered credits) |
 | **7d** | row 2, col 3 | 7-day rate-limit usage percentage and reset time |
 | **Worktree** | row 2, last | Worktree name in `--worktree` sessions; `-` otherwise |
 | **Update** | line 3 | Appears when a new release is available (checked every 24h) |
