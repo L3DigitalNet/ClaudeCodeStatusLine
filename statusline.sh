@@ -20,7 +20,7 @@
 
 set -f  # disable globbing
 shopt -s extglob  # extended globs in ${var//pat/} — visible_len strips SGR escapes with *([0-9;])
-VERSION="1.8.0"
+VERSION="1.8.1"
 
 input=$(cat)
 
@@ -273,7 +273,7 @@ diff_removed_cell=""
 if [ -n "$cwd" ]; then
     display_dir="${cwd##*/}"
     git_branch=$(git -C "${cwd}" rev-parse --abbrev-ref HEAD 2>/dev/null)
-    cwd_cell="${cyan}${display_dir}${reset}"
+    cwd_cell="${blue}${display_dir}${reset}"
     if [ -n "$git_branch" ]; then
         cwd_cell+="${dim}@${reset}${green}${git_branch}${reset}"
         # Worktree rides on the end of the branch as ':name' (dim ':' + cyan name), only in

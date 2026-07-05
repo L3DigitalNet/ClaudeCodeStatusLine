@@ -8,6 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both implementations — `statusline.sh` (Bash) and `statusline.ps1` (PowerShell) — are
 functional mirrors; every entry below applies to both unless noted.
 
+## [1.8.1] - 2026-07-05
+
+### Changed
+- **Folder name uses the model's blue (both):** the working-directory name in row 1's
+  `folder@branch` cell now renders in the same blue as the model name, tying row 1's identity
+  cells together. The branch stays green, and the worktree suffix and row-2 path stay cyan.
+
 ## [1.8.0] - 2026-07-05
 
 Reworks the trailing column so the working directory is always visible, moves the worktree

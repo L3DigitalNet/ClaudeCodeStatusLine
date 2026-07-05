@@ -1,7 +1,7 @@
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
-$VERSION = "1.8.0"
+$VERSION = "1.8.1"
 # Two lines, pipe-aligned grid (column width = max visible width of its two cells):
 #   Model [✦] effort  | tokens %used | 5h N%    @reset | [+added]   | cwd@branch[:worktree]
 #   vVERSION [$x/$y]  | Fable N%     | 7d N% Day@reset | [-removed] | ~/path/to/cwd
@@ -249,7 +249,7 @@ if ($cwd) {
     try {
         $gitBranch = git -C $cwd rev-parse --abbrev-ref HEAD 2>$null
     } catch {}
-    $cwdCell = "${cyan}${displayDir}${reset}"
+    $cwdCell = "${blue}${displayDir}${reset}"
     if ($gitBranch) {
         $cwdCell += "${dim}@${reset}${green}${gitBranch}${reset}"
         # Worktree rides on the end of the branch as ':name' (dim ':' + cyan name), only in
