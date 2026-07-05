@@ -10,12 +10,13 @@
 # weekly usage % (col 2) or a dim '-'; the +added/
 # -removed pair is inserted into BOTH rows together, only while the tree is dirty;
 # row 1's cwd cell is omitted when there is no cwd. The 5h/7d cells right-align their
-# percents and stack their '@'s. The ✦ between model and effort appears only when
-# thinking.enabled is true.
+# percents and stack their '@'s; the token % and Fable % (col 2) and the extra-usage
+# dollars (col 1) likewise right-align to their column's edge so they stack vertically.
+# The ✦ between model and effort appears only when thinking.enabled is true.
 
 set -f  # disable globbing
 shopt -s extglob  # extended globs in ${var//pat/} — visible_len strips SGR escapes with *([0-9;])
-VERSION="1.7.0"
+VERSION="1.7.1"
 
 input=$(cat)
 
@@ -249,7 +250,13 @@ if [ -n "$cwd" ]; then
     fi
 fi
 
-tokens_cell="${orange}${used_tokens}/${total_tokens}${reset} ${green}${pct_used}%${reset}"
+# Token cell (row 1, col 2). Split into prefix (used/total) and percent so the percent can be
+# right-aligned to column 2's edge once the Fable cell (row 2) is sized — see the token
+# right-align pass just below render_fable. Built here in natural (1-space) form, which is
+# also what render_fable measures to size column 2.
+tokens_prefix="${orange}${used_tokens}/${total_tokens}${reset}"
+tokens_pct="${green}${pct_used}%${reset}"
+tokens_cell="${tokens_prefix} ${tokens_pct}"
 
 # CLI version — row 2, column 1. Positional, so unknown renders '-' rather than
 # vanishing (vanishing would slide the whole second row left).
@@ -661,6 +668,20 @@ if [ -n "$extra_dollars" ]; then
     version_cell="${version_cell}$(printf '%*s' "$ed_gap" '')${extra_dollars}"
 fi
 render_fable "$usage_data"
+
+# Right-align the token percent to column 2's RIGHT edge so it stacks under the Fable
+# percent (row 2). render_fable has already sized extra_cell to column 2's width
+# (max of the token natural width and the Fable cell), so pad BETWEEN used/total and the
+# percent up to that width — a 1-space minimum matches the natural form when the token cell
+# is the wider of the two.
+tk_col=$(visible_len "$extra_cell")
+tk_natural=$(visible_len "$tokens_cell")
+[ "$tk_col" -lt "$tk_natural" ] && tk_col=$tk_natural
+tk_pfx_w=$(visible_len "$tokens_prefix")
+tk_pct_w=$(visible_len "$tokens_pct")
+tk_gap=$(( tk_col - tk_pfx_w - tk_pct_w ))
+[ "$tk_gap" -lt 1 ] && tk_gap=1
+tokens_cell="${tokens_prefix}$(printf '%*s' "$tk_gap" '')${tokens_pct}"
 
 # ---- Compose the 5h/7d cells with internal %/@ alignment ----
 # Right-align the percent strings to a shared width, and pad-left the pre-'@'

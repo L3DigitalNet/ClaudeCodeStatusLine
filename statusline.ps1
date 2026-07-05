@@ -1,7 +1,7 @@
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
-$VERSION = "1.7.0"
+$VERSION = "1.7.1"
 # Two lines, pipe-aligned grid (column width = max visible width of its two cells):
 #   Model [✦] effort  | tokens %used | 5h N%    @reset | [+added]   | cwd@branch
 #   vVERSION [$x/$y]  | Fable N%     | 7d N% Day@reset | [-removed] | worktree
@@ -11,8 +11,9 @@ $VERSION = "1.7.0"
 # weekly usage % (col 2) or a dim '-'; the +added/
 # -removed pair is inserted into BOTH rows together, only while the tree is dirty;
 # row 1's cwd cell is omitted when there is no cwd. The 5h/7d cells right-align their
-# percents and stack their '@'s. The ✦ between model and effort appears only when
-# thinking.enabled is true.
+# percents and stack their '@'s; the token % and Fable % (col 2) and the extra-usage
+# dollars (col 1) likewise right-align to their column's edge so they stack vertically.
+# The ✦ between model and effort appears only when thinking.enabled is true.
 
 # Read input from stdin
 $input = @($Input) -join "`n"
@@ -256,7 +257,13 @@ if ($cwd) {
     }
 }
 
-$tokensCell = "${orange}${usedTokens}/${totalTokens}${reset} ${green}${pctUsed}%${reset}"
+# Token cell (row 1, col 2). Split into prefix (used/total) and percent so the percent can be
+# right-aligned to column 2's edge once the Fable cell (row 2) is sized — see the token
+# right-align pass below Format-FableCell. Built in natural (1-space) form, which is also what
+# Format-FableCell measures to size column 2. Mirrors Bash.
+$tokensPrefix = "${orange}${usedTokens}/${totalTokens}${reset}"
+$tokensPct = "${green}${pctUsed}%${reset}"
+$tokensCell = "${tokensPrefix} ${tokensPct}"
 
 # CLI version — row 2, column 1. Positional, so unknown renders '-' rather than
 # vanishing (vanishing would slide the whole second row left).
@@ -620,6 +627,16 @@ if ($extraDollars) {
     $versionCell = $versionCell + (' ' * $edGap) + $extraDollars
 }
 $extraCell = Format-FableCell $parsedUsage $tokensCell
+
+# Right-align the token percent to column 2's RIGHT edge so it stacks under the Fable
+# percent (row 2). Format-FableCell has already sized $extraCell to column 2's width
+# (max of the token natural width and the Fable cell), so pad BETWEEN used/total and the
+# percent up to it — a 1-space minimum matches the natural form when tokens is wider. Mirrors Bash.
+$tkCol = [math]::Max((Get-VisibleLength $extraCell), (Get-VisibleLength $tokensCell))
+$tkPfxW = Get-VisibleLength $tokensPrefix
+$tkPctW = Get-VisibleLength $tokensPct
+$tkGap = [math]::Max(1, $tkCol - $tkPfxW - $tkPctW)
+$tokensCell = $tokensPrefix + (' ' * $tkGap) + $tokensPct
 
 # ---- Compose the 5h/7d cells with internal %/@ alignment ----
 # Right-align the percent strings to a shared width, and pad-left the pre-'@'

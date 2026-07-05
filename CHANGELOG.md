@@ -8,6 +8,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both implementations — `statusline.sh` (Bash) and `statusline.ps1` (PowerShell) — are
 functional mirrors; every entry below applies to both unless noted.
 
+## [1.7.1] - 2026-07-05
+
+### Fixed
+- **Token percentage right-aligns to its column edge (both):** the context-usage percentage
+  now sits flush under the Fable percentage in column 2, instead of being left-packed with
+  trailing padding whenever the Fable cell is the wider of the two. The `used/total` figure
+  stays left and the padding moves between it and the percentage — the same treatment the
+  5h/7d percentages, the Fable percentage, and the extra-usage dollars already use, so every
+  percentage in the grid now stacks vertically. Purely visual; no data changes.
+
+  ```text
+  Opus 4.8 1M ✦ high | 0/1M   0% | 5h 46%    @02:10 | ClaudeCodeStatusLine@main
+  v2.1.201    $0/$25 | Fable 79% | 7d 70% Sun@19:00 | -
+  ```
+
 ## [1.7.0] - 2026-07-04
 
 Adds a **Fable weekly usage** cell so you can see how close you are to the separate

@@ -19,13 +19,13 @@ Opus 4.8 1M ✦ high | 435k/1M 44% | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLi
 v2.1.198    $0/$25 | Fable   79% | 7d 12% Sun@19:00 | -3  | my-worktree
 ```
 
-(The extra-usage dollars and the Fable percentage right-align to their column edges, so
-they sit flush under the model name and the token percentage respectively.)
+(The token and Fable percentages right-align to column 2's edge so they stack vertically,
+and the extra-usage dollars right-align to column 1's edge, flush under the model name.)
 
 | Cell | Position | Description |
 |------|----------|-------------|
 | **Model + Effort** | row 1, col 1 | Model name (a `(1M context)` suffix collapses to `1M`), a `✦` when extended thinking is enabled, and the reasoning effort level (`low`, `med`, `high`, `xhigh`, `max`) |
-| **Tokens** | row 1, col 2 | Used / total context-window tokens and % used |
+| **Tokens** | row 1, col 2 | Used / total context-window tokens and % used (the % right-aligns to the column edge, stacking under the Fable %) |
 | **5h** | row 1, col 3 | 5-hour rate-limit usage percentage and reset time |
 | **Lines +/−** | col 4 | Unstaged line changes in tracked files, `+added` stacked over `-removed` (staged and untracked changes aren't counted). The column appears only while the tree is dirty |
 | **CWD@Branch** | row 1, last | Current folder name and git branch; omitted when Claude Code supplies no working directory |
