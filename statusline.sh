@@ -501,14 +501,13 @@ format_reset_time() {
 
 sep=" ${dim}|${reset} "
 
-# Compute the extra_usage cell (row 2, column 2) from API usage data — extra_usage
-# is not available via stdin rate_limits. Sets the global extra_cell. Positional:
-# defaults to a dim '-' (disabled / no data); shows dollar figures whenever
-# is_enabled, INCLUDING a $0 month — the old hide-at-$0.00 rule is gone because a
-# grid cell cannot vanish. The grid assembler owns separators; no leading ' | '.
+# Compute the extra-usage dollars FRAGMENT (row 2, col 1 — appended to version_cell).
+# extra_usage is only in the API response, not stdin rate_limits. Sets the global
+# extra_dollars: a colored "$used/$limit" when enabled + numeric; an "enabled" marker
+# when enabled but unparseable; empty otherwise (nothing gets appended to the version).
 render_extra_usage() {
     local data="$1"
-    extra_cell="${dim}-${reset}"
+    extra_dollars=""
     [ -z "$data" ] && return
     local enabled
     enabled=$(echo "$data" | jq -r '.extra_usage.is_enabled // false' 2>/dev/null)
@@ -518,17 +517,16 @@ render_extra_usage() {
     raw_used=$(echo "$data" | jq -r '.extra_usage.used_credits // empty')
     raw_limit=$(echo "$data" | jq -r '.extra_usage.monthly_limit // empty')
 
-    # Show dollar figures only when both credit values are numeric. When they are
-    # absent or malformed, fall back to a plain "enabled" marker rather than the
-    # '-' placeholder — awk would otherwise coerce garbage to 0.
     if [[ "$raw_used" =~ ^[0-9]+([.][0-9]+)?$ ]] && [[ "$raw_limit" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
         used=$(fmt_credits "$raw_used")
         limit=$(fmt_credits "$raw_limit")
         pct=$(echo "$data" | jq -r '.extra_usage.utilization // 0' | awk '{printf "%d", $1}')
         color=$(usage_color "$pct")
-        extra_cell="${white}extra${reset} ${color}\$${used}/\$${limit}${reset}"
+        extra_dollars="${color}\$${used}/\$${limit}${reset}"
     else
-        extra_cell="${white}extra${reset} ${green}enabled${reset}"
+        # Enabled but credit values unparseable: keep the spec's "enabled" marker
+        # (awk would coerce garbage to a fake $0), rendered as "v…  enabled".
+        extra_dollars="${green}enabled${reset}"
     fi
 }
 
@@ -564,9 +562,6 @@ if $effective_builtin; then
             fi
         fi
     fi
-
-    # Compute the extra cell from the API cache (stdin rate_limits doesn't expose it)
-    render_extra_usage "$usage_data"
 
     # Cache builtin values so they're available as fallback when API is unavailable.
     # Convert epoch resets_at to ISO 8601 for compatibility with the API-format cache parser.
@@ -613,11 +608,15 @@ elif [ -n "$usage_data" ] && echo "$usage_data" | jq -e '.five_hour' >/dev/null 
         sd_prefix="${seven_day_reset%%@*}"
         sd_time="@${seven_day_reset#*@}"
     fi
-
-    render_extra_usage "$usage_data"
 else
     : # No valid usage data — the '-' placeholder defaults above stand.
 fi
+
+# extra-usage dollars ride along in the version cell (row 2, col 1); Fable weekly takes
+# the freed col-2 slot. Both read the API response only, so compute them once here — after
+# every branch has populated usage_data — regardless of which usage source rendered 5h/7d.
+render_extra_usage "$usage_data"
+[ -n "$extra_dollars" ] && version_cell="${version_cell}  ${extra_dollars}"
 
 # ---- Compose the 5h/7d cells with internal %/@ alignment ----
 # Right-align the percent strings to a shared width, and pad-left the pre-'@'
