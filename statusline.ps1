@@ -1,19 +1,23 @@
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
-$VERSION = "1.7.1"
+$VERSION = "1.8.0"
 # Two lines, pipe-aligned grid (column width = max visible width of its two cells):
-#   Model [✦] effort  | tokens %used | 5h N%    @reset | [+added]   | cwd@branch
-#   vVERSION [$x/$y]  | Fable N%     | 7d N% Day@reset | [-removed] | worktree
-# Cells are positional: row 2 always renders version/Fable/7d/worktree (dim '-'
-# placeholders for unknown version / absent Fable weekly / absent worktree); the extra-
-# usage '$used/$limit' rides in the version cell when enabled; Fable is the Fable-scoped
-# weekly usage % (col 2) or a dim '-'; the +added/
-# -removed pair is inserted into BOTH rows together, only while the tree is dirty;
-# row 1's cwd cell is omitted when there is no cwd. The 5h/7d cells right-align their
-# percents and stack their '@'s; the token % and Fable % (col 2) and the extra-usage
-# dollars (col 1) likewise right-align to their column's edge so they stack vertically.
-# The ✦ between model and effort appears only when thinking.enabled is true.
+#   Model [✦] effort  | tokens %used | 5h N%    @reset | [+added]   | cwd@branch[:worktree]
+#   vVERSION [$x/$y]  | Fable N%     | 7d N% Day@reset | [-removed] | ~/path/to/cwd
+# Cells are positional: row 2 always renders version/Fable/7d (dim '-' placeholders for
+# unknown version / absent Fable weekly); the extra-usage '$used/$limit' rides in the
+# version cell when enabled; Fable is the Fable-scoped weekly usage % (col 2), or a 😢 in
+# place of the percent when the Fable weekly limit is unavailable (the label always stays);
+# the +added/-removed pair is inserted into BOTH rows together, only while the tree is dirty.
+# The trailing column is cwd-derived and shared: row 1 shows basename@branch[:worktree],
+# row 2 the full path with $USERPROFILE collapsed to '~'; both cells appear or omit together,
+# so when there is no cwd both rows simply end after their usage cells. The worktree name
+# (--worktree sessions only) rides on the end of row 1's branch as ':name', hidden with its
+# colon otherwise. The 5h/7d cells right-align their percents and stack their '@'s; the
+# effort word (col 1), token % and Fable % (col 2) and the extra-usage dollars (col 1)
+# likewise right-align to their column's edge so they stack vertically. The ✦ between model
+# and effort appears only when thinking.enabled is true.
 
 # Read input from stdin
 $input = @($Input) -join "`n"
@@ -218,14 +222,25 @@ switch ($effortLevel) {
     "max"    { $effortPart = "${red}${effortLevel}${reset}" }
     default  { $effortPart = "${green}${effortLevel}${reset}" }
 }
-$modelCell = "${blue}${modelName}${reset}"
-if ($thinkingEnabled -eq $true) { $modelCell += " ${purple}✦${reset}" }
-$modelCell += " ${effortPart}"
+# Split the fused cell into a prefix (model name + optional ✦) and the effort word so the
+# effort can be right-aligned to column 1's edge after the version cell is finalized (see the
+# effort right-align pass below Format-ExtraUsage). Built in natural (1-space) form, which is
+# also the width Format-ExtraUsage measures to size column 1. Mirrors Bash.
+$modelPrefix = "${blue}${modelName}${reset}"
+if ($thinkingEnabled -eq $true) { $modelPrefix += " ${purple}✦${reset}" }
+$modelCell = "${modelPrefix} ${effortPart}"
 
-# Current working directory — row 1, trailing cell. Prefer workspace.current_dir
-# (the documented-preferred alias); fall back to the top-level .cwd for older CLIs.
+# Worktree name — read before the cwd block so it can ride on row 1's branch. stdin
+# .worktree.name exists only in --worktree isolation sessions.
+$worktreeName = $data.worktree.name
+
+# Current working directory drives BOTH trailing cells: row 1's basename@branch[:worktree]
+# ($cwdCell) and row 2's full path with $USERPROFILE collapsed to '~' ($pathCell). Both are
+# cwd-derived, so they appear or omit together as column partners. Prefer
+# workspace.current_dir (the documented-preferred alias); fall back to .cwd for older CLIs.
 $cwd = if ($data.workspace.current_dir) { $data.workspace.current_dir } else { $data.cwd }
 $cwdCell = ""
+$pathCell = ""
 $diffAddedCell = ""
 $diffRemovedCell = ""
 if ($cwd) {
@@ -237,6 +252,9 @@ if ($cwd) {
     $cwdCell = "${cyan}${displayDir}${reset}"
     if ($gitBranch) {
         $cwdCell += "${dim}@${reset}${green}${gitBranch}${reset}"
+        # Worktree rides on the end of the branch as ':name' (dim ':' + cyan name), only in
+        # --worktree sessions; the colon and name hide together otherwise.
+        if ($worktreeName) { $cwdCell += "${dim}:${reset}${cyan}${worktreeName}${reset}" }
         try {
             # Unstaged line changes, tracked files only — rendered as a stacked column
             # pair (+added over -removed) that exists only while the tree is dirty.
@@ -255,6 +273,19 @@ if ($cwd) {
             }
         } catch {}
     }
+    # Row 2's trailing cell: the full path with a leading $USERPROFILE collapsed to '~'
+    # (e.g. C:\Users\me\projects\x -> ~\projects\x), matching Bash's $HOME collapse. Accept
+    # either separator so a Unix-style cwd (WSL) collapses too.
+    $displayPath = "$cwd"
+    $homeDir = $env:USERPROFILE
+    if ($homeDir) {
+        if ($displayPath -eq $homeDir) {
+            $displayPath = '~'
+        } elseif ($displayPath.StartsWith("$homeDir/") -or $displayPath.StartsWith("$homeDir\")) {
+            $displayPath = '~' + $displayPath.Substring($homeDir.Length)
+        }
+    }
+    $pathCell = "${cyan}${displayPath}${reset}"
 }
 
 # Token cell (row 1, col 2). Split into prefix (used/total) and percent so the percent can be
@@ -268,11 +299,6 @@ $tokensCell = "${tokensPrefix} ${tokensPct}"
 # CLI version — row 2, column 1. Positional, so unknown renders '-' rather than
 # vanishing (vanishing would slide the whole second row left).
 $versionCell = if ($cliVersion) { "${orange}v${cliVersion}${reset}" } else { "${dim}-${reset}" }
-
-# Worktree — row 2, column 4. stdin .worktree.name exists only in --worktree
-# isolation sessions; cyan matches the directory-identity color above it.
-$worktreeName = $data.worktree.name
-$worktreeCell = if ($worktreeName) { "${cyan}${worktreeName}${reset}" } else { "${dim}-${reset}" }
 
 # ===== OAuth token resolution =====
 function Get-OAuthToken {
@@ -484,27 +510,35 @@ function Format-ExtraUsage($usage) {
 }
 
 # Fable weekly usage cell (row 2, col 2) from the API response limits[] array. Hardcoded to
-# display_name=="Fable"; dim '-' when absent. @() forces array iteration over a scalar limits.
+# display_name=="Fable". When the Fable weekly limit is ABSENT (Fable left subscription plans
+# 2026-07-07, non-Fable accounts, or no API data) the cell does NOT vanish or dim to '-': the
+# 'Fable' label stays and the percent becomes a 😢, holding the column until Fable returns.
+# @() forces array iteration over a scalar limits. Mirrors Bash render_fable.
 function Format-FableCell($usage, $tokensCell) {
-    $placeholder = "${dim}-${reset}"
-    if (-not $usage) { return $placeholder }
-    try {
-        $entry = @($usage.limits) | Where-Object { $_.scope.model.display_name -eq 'Fable' } | Select-Object -First 1
-        if (-not $entry -or $null -eq $entry.percent) { return $placeholder }
-        $pct = [math]::Floor([double]$entry.percent)
-        $color = Get-UsageColor $pct
-        # Right-align the percent to column 2's edge; 'Fable' stays left, pad goes between
-        # (1-space minimum). Column 2's width is max(tokens row 1, Fable row 2) and tokensCell
-        # is the only row-1 cell there. 'Fable' is a fixed 5 visible chars. Mirrors Bash.
-        $pctTxt = "${pct}%"
-        $labLen = 5
-        $plen = $pctTxt.Length
-        $tok = Get-VisibleLength $tokensCell
-        $natural = $labLen + 1 + $plen
-        $target = [math]::Max($tok, $natural)
-        $gap = $target - $labLen - $plen
-        return "${white}Fable${reset}" + (' ' * $gap) + "${color}${pctTxt}${reset}"
-    } catch { return $placeholder }
+    # Default = Fable unavailable. Overwritten below only when a numeric Fable percent exists.
+    $pctTxt = "😢"
+    $color = $reset
+    if ($usage) {
+        try {
+            $entry = @($usage.limits) | Where-Object { $_.scope.model.display_name -eq 'Fable' } | Select-Object -First 1
+            if ($entry -and $null -ne $entry.percent) {
+                $pct = [math]::Floor([double]$entry.percent)
+                $color = Get-UsageColor $pct
+                $pctTxt = "${pct}%"
+            }
+        } catch {}
+    }
+    # Right-align the value ('NN%' or 😢) to column 2's edge; 'Fable' stays left, pad goes
+    # between (1-space minimum). Column 2's width is max(tokens row 1, Fable row 2) and
+    # tokensCell is the only row-1 cell there. 'Fable' is a fixed 5 visible chars; the value's
+    # width comes from Get-VisibleLength (😢 is a surrogate pair -> .Length 2 = its display width).
+    $labLen = 5
+    $plen = Get-VisibleLength $pctTxt
+    $tok = Get-VisibleLength $tokensCell
+    $natural = $labLen + 1 + $plen
+    $target = [math]::Max($tok, $natural)
+    $gap = $target - $labLen - $plen
+    return "${white}Fable${reset}" + (' ' * $gap) + "${color}${pctTxt}${reset}"
 }
 
 # Parse usage_data once (used by both branches below for extra_usage)
@@ -626,6 +660,18 @@ if ($extraDollars) {
     $edGap = $edTarget - $edVlen - $edDlen
     $versionCell = $versionCell + (' ' * $edGap) + $extraDollars
 }
+
+# Right-align the effort word to column 1's RIGHT edge so it stays flush with the ' | ' and
+# doesn't drift when the version+dollars cell is the wider of the two — otherwise the generic
+# pad pass would add the slack AFTER the effort word (high dollars widened col 1 and pushed
+# 'effort' off the pipe). Col 1's width is max(model natural, finalized version cell); pad
+# BETWEEN the model/✦ prefix and effort (1-space minimum). Run unconditionally, mirroring Bash.
+$mCol = [math]::Max((Get-VisibleLength $versionCell), (Get-VisibleLength $modelCell))
+$mPfxW = Get-VisibleLength $modelPrefix
+$mEffW = Get-VisibleLength $effortPart
+$mGap = [math]::Max(1, $mCol - $mPfxW - $mEffW)
+$modelCell = $modelPrefix + (' ' * $mGap) + $effortPart
+
 $extraCell = Format-FableCell $parsedUsage $tokensCell
 
 # Right-align the token percent to column 2's RIGHT edge so it stacks under the Fable
@@ -704,17 +750,20 @@ if ($env:STATUSLINE_CHECK_UPDATES -cne "false") {
 # ===== Assemble the two-line grid =====
 # Column width = max visible width of the column's two cells; every cell except the
 # last of its row pads right with PLAIN spaces to that width, so the ' | ' separators
-# stack vertically. Row 2 always has four cells; row 1 may stop after the 5h cell.
+# stack vertically. Both rows share the same three leading cells (version/Fable/7d in
+# row 2); the trailing cwd column is optional and appears in both rows or neither.
 $r1 = @($modelCell, $tokensCell, $fiveCell)
 $r2 = @($versionCell, $extraCell, $sevenCell)
-# The +added/-removed pair is inserted into BOTH rows together (never one alone),
-# so cwd@branch and worktree stay column partners whether or not it appears.
+# The +added/-removed pair is inserted into BOTH rows together (never one alone), so the
+# cwd cell (row 1) and path cell (row 2) stay column partners whether or not it appears.
 if ($diffAddedCell) {
     $r1 += $diffAddedCell
     $r2 += $diffRemovedCell
 }
+# $cwdCell and $pathCell are both set iff cwd is present, so they are appended together
+# (same trailing column) or omitted together — no positional '-' placeholder needed.
 if ($cwdCell) { $r1 += $cwdCell }
-$r2 += $worktreeCell
+if ($pathCell) { $r2 += $pathCell }
 
 $line1 = ""; $line2 = ""
 $maxCols = [math]::Max($r1.Count, $r2.Count)

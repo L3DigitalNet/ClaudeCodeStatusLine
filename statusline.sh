@@ -2,21 +2,25 @@
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 # Two lines, pipe-aligned grid (column width = max visible width of its two cells):
-#   Model [✦] effort  | tokens %used | 5h N%    @reset | [+added]   | cwd@branch
-#   vVERSION [$x/$y]  | Fable N%     | 7d N% Day@reset | [-removed] | worktree
-# Cells are positional: row 2 always renders version/Fable/7d/worktree (dim '-'
-# placeholders for unknown version / absent Fable weekly / absent worktree); the extra-
-# usage '$used/$limit' rides in the version cell when enabled; Fable is the Fable-scoped
-# weekly usage % (col 2) or a dim '-'; the +added/
-# -removed pair is inserted into BOTH rows together, only while the tree is dirty;
-# row 1's cwd cell is omitted when there is no cwd. The 5h/7d cells right-align their
-# percents and stack their '@'s; the token % and Fable % (col 2) and the extra-usage
-# dollars (col 1) likewise right-align to their column's edge so they stack vertically.
-# The ✦ between model and effort appears only when thinking.enabled is true.
+#   Model [✦] effort  | tokens %used | 5h N%    @reset | [+added]   | cwd@branch[:worktree]
+#   vVERSION [$x/$y]  | Fable N%     | 7d N% Day@reset | [-removed] | ~/path/to/cwd
+# Cells are positional: row 2 always renders version/Fable/7d (dim '-' placeholders for
+# unknown version / absent Fable weekly); the extra-usage '$used/$limit' rides in the
+# version cell when enabled; Fable is the Fable-scoped weekly usage % (col 2), or a 😢 in
+# place of the percent when the Fable weekly limit is unavailable (the label always stays);
+# the +added/-removed pair is inserted into BOTH rows together, only while the tree is dirty.
+# The trailing column is cwd-derived and shared: row 1 shows basename@branch[:worktree],
+# row 2 the full path with $HOME collapsed to '~'; both cells appear or omit together, so
+# when there is no cwd both rows simply end after their usage cells. The worktree name
+# (--worktree sessions only) rides on the end of row 1's branch as ':name', hidden with its
+# colon otherwise. The 5h/7d cells right-align their percents and stack their '@'s; the
+# effort word (col 1), token % and Fable % (col 2) and the extra-usage dollars (col 1)
+# likewise right-align to their column's edge so they stack vertically. The ✦ between model
+# and effort appears only when thinking.enabled is true.
 
 set -f  # disable globbing
 shopt -s extglob  # extended globs in ${var//pat/} — visible_len strips SGR escapes with *([0-9;])
-VERSION="1.7.1"
+VERSION="1.8.0"
 
 input=$(cat)
 
@@ -69,6 +73,21 @@ floor_pct() {
     awk -v n="$1" 'BEGIN { printf "%d", n }'
 }
 
+# Collapse a leading $HOME in a path to '~' for the compact row-2 cwd cell (e.g.
+# /home/me/projects/x -> ~/projects/x). A function (not an inline case) so the suite can
+# exercise it via load_fn. The `case` glob matches even under `set -f` (globbing off
+# affects pathname expansion, not case patterns). No-op when HOME is unset.
+collapse_home() {
+    local p="$1"
+    if [ -n "$HOME" ]; then
+        case "$p" in
+            "$HOME")   p="~" ;;
+            "$HOME"/*) p="~${p#"$HOME"}" ;;
+        esac
+    fi
+    printf '%s' "$p"
+}
+
 # Visible (printable) length of a cell: character count with the script's own SGR
 # color escapes stripped. extglob's *([0-9;]) keeps the glob anchored inside one
 # escape — a bare * would greedily eat through to the LAST 'm' in the string. Only
@@ -83,6 +102,12 @@ visible_len() {
     # before counting so the width is right in any locale. (PowerShell needs no
     # equivalent — .Length already counts it as 1.)
     s="${s//✦/.}"
+    # 😢 (Fable-unavailable marker) is an emoji: one code point but TWO terminal columns
+    # (and 4 UTF-8 bytes under a C locale). ${#} would count 1 (UTF-8) or 4 (C), both wrong
+    # for alignment — swap it for two ASCII chars so the width is its display width (2) in
+    # any locale, so the pipe after the Fable cell stays aligned. (PowerShell needs no
+    # equivalent — .Length counts its surrogate pair as 2, already the display width.)
+    s="${s//😢/..}"
     printf '%s' "${#s}"
 }
 
@@ -224,14 +249,25 @@ case "$effort_level" in
     max)    effort_part="${red}${effort_level}${reset}" ;;
     *)      effort_part="${green}${effort_level}${reset}" ;;
 esac
-model_cell="${blue}${model_name}${reset}"
-[ "$thinking_enabled" = "true" ] && model_cell+=" ${purple}✦${reset}"
-model_cell+=" ${effort_part}"
+# Split the fused cell into a prefix (model name + optional ✦) and the effort word so the
+# effort can be right-aligned to column 1's edge after the version cell is finalized (see the
+# effort right-align pass below render_extra_usage). Built here in natural (1-space) form,
+# which is also the width render_extra_usage measures to size column 1.
+model_prefix="${blue}${model_name}${reset}"
+[ "$thinking_enabled" = "true" ] && model_prefix+=" ${purple}✦${reset}"
+model_cell="${model_prefix} ${effort_part}"
 
-# Current working directory — row 1, trailing cell. Prefer workspace.current_dir
-# (the documented-preferred alias); fall back to the top-level .cwd for older CLIs.
+# Worktree name — read before the cwd block so it can ride on row 1's branch. stdin
+# .worktree.name exists only in --worktree isolation sessions.
+worktree_name=$(echo "$input" | jq -r '.worktree.name // empty')
+
+# Current working directory drives BOTH trailing cells: row 1's basename@branch[:worktree]
+# (cwd_cell) and row 2's full path with $HOME collapsed to '~' (path_cell). Both are
+# cwd-derived, so they appear or omit together as column partners. Prefer
+# workspace.current_dir (the documented-preferred alias); fall back to .cwd for older CLIs.
 cwd=$(echo "$input" | jq -r '.workspace.current_dir // .cwd // empty')
 cwd_cell=""
+path_cell=""
 diff_added_cell=""
 diff_removed_cell=""
 if [ -n "$cwd" ]; then
@@ -240,6 +276,9 @@ if [ -n "$cwd" ]; then
     cwd_cell="${cyan}${display_dir}${reset}"
     if [ -n "$git_branch" ]; then
         cwd_cell+="${dim}@${reset}${green}${git_branch}${reset}"
+        # Worktree rides on the end of the branch as ':name' (dim ':' + cyan name), only in
+        # --worktree sessions; the colon and name hide together otherwise.
+        [ -n "$worktree_name" ] && cwd_cell+="${dim}:${reset}${cyan}${worktree_name}${reset}"
         # Unstaged line changes, tracked files only — rendered as a stacked column
         # pair (+added over -removed) that exists only while the tree is dirty.
         git_stat=$(git -C "${cwd}" diff --numstat 2>/dev/null | awk '{a+=$1; d+=$2} END {if (a+d>0) printf "%d %d", a, d}')
@@ -248,6 +287,7 @@ if [ -n "$cwd" ]; then
             diff_removed_cell="${red}-${git_stat##* }${reset}"
         fi
     fi
+    path_cell="${cyan}$(collapse_home "$cwd")${reset}"
 fi
 
 # Token cell (row 1, col 2). Split into prefix (used/total) and percent so the percent can be
@@ -264,15 +304,6 @@ if [ -n "$cli_version" ]; then
     version_cell="${orange}v${cli_version}${reset}"
 else
     version_cell="${dim}-${reset}"
-fi
-
-# Worktree — row 2, column 4. stdin .worktree.name exists only in --worktree
-# isolation sessions; cyan matches the directory-identity color above it.
-worktree_name=$(echo "$input" | jq -r '.worktree.name // empty')
-if [ -n "$worktree_name" ]; then
-    worktree_cell="${cyan}${worktree_name}${reset}"
-else
-    worktree_cell="${dim}-${reset}"
 fi
 
 # ===== Cross-platform OAuth token resolution (from statusline.sh) =====
@@ -541,25 +572,32 @@ render_extra_usage() {
 
 # Fable weekly usage cell (row 2, col 2) — the Fable-scoped weekly limit from the API
 # response's limits[] array (never stdin). Hardcoded to display_name=="Fable"; a future
-# scoped model won't hijack this cell. Dim '-' when absent (post-credits switch, non-Fable
-# accounts, or no API data). Percent floored + colored like the 5h/7d cells; no reset time
-# (it shares the 7d window, already shown in col 3).
+# scoped model won't hijack this cell. Percent floored + colored like the 5h/7d cells; no
+# reset time (it shares the 7d window, already shown in col 3). When the Fable weekly limit
+# is ABSENT (Fable left subscription plans 2026-07-07, non-Fable accounts, or no API data)
+# the cell does NOT vanish or dim to '-': the 'Fable' label stays and the percent becomes a
+# 😢, holding the column until Fable returns to subscription plans. The 😢 is display-width 2
+# (see visible_len), so it right-aligns to the column edge exactly like a percent would.
 render_fable() {
     local data="$1"
-    extra_cell="${dim}-${reset}"
-    [ -z "$data" ] && return
-    local pct color
-    pct=$(echo "$data" | jq -r '.limits[]? | select((.scope.model.display_name // "")=="Fable") | .percent' 2>/dev/null | head -n1)
-    [ -z "$pct" ] && return
-    [[ "$pct" =~ ^[0-9]+([.][0-9]+)?$ ]] || return
-    pct=$(floor_pct "$pct")
-    color=$(usage_color "$pct")
-    # Right-align the percent to column 2's RIGHT edge, 'Fable' stays left — padding goes
-    # BETWEEN the label and the percent. Column 2's width is max(tokens row 1, Fable row 2)
-    # and tokens_cell is the only row-1 cell there, so size it now and pre-expand (1-space
-    # minimum gap). 'Fable' is a fixed 5 visible chars, so no visible_len call on the label.
-    local pct_txt="${pct}%"
-    local lab_len=5 pl=${#pct_txt} tok gap target natural
+    # Default = Fable unavailable. Overwritten below only when a numeric Fable percent exists.
+    local pct_txt="😢" color="$reset"
+    if [ -n "$data" ]; then
+        local pct
+        pct=$(echo "$data" | jq -r '.limits[]? | select((.scope.model.display_name // "")=="Fable") | .percent' 2>/dev/null | head -n1)
+        if [ -n "$pct" ] && [[ "$pct" =~ ^[0-9]+([.][0-9]+)?$ ]]; then
+            pct=$(floor_pct "$pct")
+            color=$(usage_color "$pct")
+            pct_txt="${pct}%"
+        fi
+    fi
+    # Right-align the value ('NN%' or 😢) to column 2's RIGHT edge, 'Fable' stays left —
+    # padding goes BETWEEN the label and the value. Column 2's width is max(tokens row 1,
+    # Fable row 2) and tokens_cell is the only row-1 cell there, so size it now and pre-expand
+    # (1-space minimum gap). 'Fable' is a fixed 5 visible chars; the value's width comes from
+    # visible_len (so the double-width 😢 counts as 2).
+    local lab_len=5 pl tok gap target natural
+    pl=$(visible_len "$pct_txt")
     tok=$(visible_len "${tokens_cell:-}")
     natural=$(( lab_len + 1 + pl ))
     target=$(( tok > natural ? tok : natural ))
@@ -667,6 +705,23 @@ if [ -n "$extra_dollars" ]; then
     ed_gap=$(( ed_target - ed_vlen - ed_dlen ))
     version_cell="${version_cell}$(printf '%*s' "$ed_gap" '')${extra_dollars}"
 fi
+
+# Right-align the effort word to column 1's RIGHT edge so it stays flush with the ' | ' and
+# doesn't drift when the version+dollars cell is the wider of the two — otherwise the generic
+# pad pass would add the slack AFTER the effort word (that trailing pad was the bug: high
+# dollars widened col 1, pushing 'effort' off the pipe). Col 1's width is max(model natural,
+# finalized version cell); pad BETWEEN the model/✦ prefix and effort (1-space minimum). Same
+# sub-align idiom as the extra dollars / token % / Fable %; run unconditionally (not just when
+# dollars exist) so col 1 stays right-aligned whichever cell is wider.
+m_col=$(visible_len "$version_cell")
+m_natural=$(visible_len "$model_cell")
+[ "$m_col" -lt "$m_natural" ] && m_col=$m_natural
+m_pfx_w=$(visible_len "$model_prefix")
+m_eff_w=$(visible_len "$effort_part")
+m_gap=$(( m_col - m_pfx_w - m_eff_w ))
+[ "$m_gap" -lt 1 ] && m_gap=1
+model_cell="${model_prefix}$(printf '%*s' "$m_gap" '')${effort_part}"
+
 render_fable "$usage_data"
 
 # Right-align the token percent to column 2's RIGHT edge so it stacks under the Fable
@@ -744,17 +799,20 @@ fi
 # ===== Assemble the two-line grid =====
 # Column width = max visible width of the column's two cells; every cell except the
 # last of its row pads right with PLAIN spaces to that width, so the ' | ' separators
-# stack vertically. Row 2 always has four cells; row 1 may stop after the 5h cell.
+# stack vertically. Both rows share the same three leading cells (version/Fable/7d in
+# row 2); the trailing cwd column is optional and appears in both rows or neither.
 r1=( "$model_cell" "$tokens_cell" "$five_cell" )
 r2=( "$version_cell" "$extra_cell" "$seven_cell" )
-# The +added/-removed pair is inserted into BOTH rows together (never one alone),
-# so cwd@branch and worktree stay column partners whether or not it appears.
+# The +added/-removed pair is inserted into BOTH rows together (never one alone), so the
+# cwd cell (row 1) and path cell (row 2) stay column partners whether or not it appears.
 if [ -n "$diff_added_cell" ]; then
     r1+=( "$diff_added_cell" )
     r2+=( "$diff_removed_cell" )
 fi
+# cwd_cell and path_cell are both set iff cwd is present, so they are appended together
+# (same trailing column) or omitted together — no positional '-' placeholder needed.
 [ -n "$cwd_cell" ] && r1+=( "$cwd_cell" )
-r2+=( "$worktree_cell" )
+[ -n "$path_cell" ] && r2+=( "$path_cell" )
 
 line1=""
 line2=""
