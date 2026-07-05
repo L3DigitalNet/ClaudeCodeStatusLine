@@ -15,8 +15,8 @@ Fable-scoped weekly limit — distinct from the all-model 7-day cap — without 
 `/usage`.
 
 ```text
-Sonnet 5 ✦ high | 435k/1M 44% | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLine@main
-v2.1.198 $0/$25 | Fable 79%   | 7d 12% Sun@19:00 | -3  | my-worktree
+Opus 4.8 1M ✦ high | 435k/1M 44% | 5h  4%    @16:40 | +12 | ClaudeCodeStatusLine@main
+v2.1.198    $0/$25 | Fable 79%   | 7d 12% Sun@19:00 | -3  | my-worktree
 ```
 
 ### Added
@@ -27,10 +27,11 @@ v2.1.198 $0/$25 | Fable 79%   | 7d 12% Sun@19:00 | -3  | my-worktree
   limit is active — accounts without Fable access, or once Fable moves to metered credits.
 
 ### Changed
-- **Extra-usage credits moved into the version cell (row 2, col 1):** `v2.1.198 $0/$25`
+- **Extra-usage credits moved into the version cell (row 2, col 1):** `v2.1.198    $0/$25`
   instead of a standalone `extra $0/$25` cell — freeing column 2 for the Fable meter. The
-  layout stays five columns wide; nothing else shifts. When extra usage is disabled the
-  version renders alone.
+  dollars right-align to the column's edge (flush under the model), so the padding sits
+  between the version and the dollars. The layout stays five columns wide; nothing else
+  shifts. When extra usage is disabled the version renders alone.
 
 ### Fixed
 - **`limits[]` cache preservation (both):** the built-in `rate_limits` path rewrote the

@@ -596,7 +596,19 @@ if ($effectiveBuiltin) {
 # extra-usage dollars ride in the version cell (row 2, col 1); Fable weekly takes col 2.
 # Both read the API response only — compute once here after every branch populated $parsedUsage.
 $extraDollars = Format-ExtraUsage $parsedUsage
-if ($extraDollars) { $versionCell = "${versionCell}  ${extraDollars}" }
+if ($extraDollars) {
+    # Right-align the extra-usage dollars to column 1's RIGHT edge (flush with the ' | '),
+    # padding BETWEEN the version and the dollars. Column 1's width is max(model row 1,
+    # version row 2); $modelCell is the only row-1 cell, so pre-expand now (2-space minimum
+    # gap when the version cell is the wider of the two). Mirrors the Bash side.
+    $edVlen = Get-VisibleLength $versionCell
+    $edDlen = Get-VisibleLength $extraDollars
+    $edMlen = Get-VisibleLength $modelCell
+    $edNatural = $edVlen + 2 + $edDlen
+    $edTarget = [math]::Max($edMlen, $edNatural)
+    $edGap = $edTarget - $edVlen - $edDlen
+    $versionCell = $versionCell + (' ' * $edGap) + $extraDollars
+}
 $extraCell = Format-FableCell $parsedUsage
 
 # ---- Compose the 5h/7d cells with internal %/@ alignment ----

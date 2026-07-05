@@ -636,7 +636,20 @@ fi
 # the freed col-2 slot. Both read the API response only, so compute them once here — after
 # every branch has populated usage_data — regardless of which usage source rendered 5h/7d.
 render_extra_usage "$usage_data"
-[ -n "$extra_dollars" ] && version_cell="${version_cell}  ${extra_dollars}"
+# Right-align the extra-usage dollars to column 1's RIGHT edge (flush with the ' | '),
+# putting the pad BETWEEN the version and the dollars instead of after the cell. Column 1's
+# width is max(model row 1, version row 2) and model_cell is the only row-1 cell here, so we
+# can size it now and pre-expand — the generic pad pass then adds zero trailing pad. Keeps a
+# 2-space minimum gap for the (rare) case where the version cell is the wider of the two.
+if [ -n "$extra_dollars" ]; then
+    ed_vlen=$(visible_len "$version_cell")
+    ed_dlen=$(visible_len "$extra_dollars")
+    ed_mlen=$(visible_len "$model_cell")
+    ed_natural=$(( ed_vlen + 2 + ed_dlen ))
+    ed_target=$(( ed_mlen > ed_natural ? ed_mlen : ed_natural ))
+    ed_gap=$(( ed_target - ed_vlen - ed_dlen ))
+    version_cell="${version_cell}$(printf '%*s' "$ed_gap" '')${extra_dollars}"
+fi
 render_fable "$usage_data"
 
 # ---- Compose the 5h/7d cells with internal %/@ alignment ----
