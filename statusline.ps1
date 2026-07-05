@@ -1,7 +1,7 @@
 # Source: https://github.com/chrisdpurcell/ClaudeCodeStatusLine
 # Originally created by Daniel Oliveira (https://github.com/daniel3303/ClaudeCodeStatusLine); maintained by Chris Purcell.
 
-$VERSION = "1.8.1"
+$VERSION = "1.8.2"
 # Two lines, pipe-aligned grid (column width = max visible width of its two cells):
 #   Model [✦] effort  | tokens %used | 5h N%    @reset | [+added]   | cwd@branch[:worktree]
 #   vVERSION [$x/$y]  | Fable N%     | 7d N% Day@reset | [-removed] | ~/path/to/cwd
@@ -222,12 +222,14 @@ switch ($effortLevel) {
     "max"    { $effortPart = "${red}${effortLevel}${reset}" }
     default  { $effortPart = "${green}${effortLevel}${reset}" }
 }
-# Split the fused cell into a prefix (model name + optional ✦) and the effort word so the
-# effort can be right-aligned to column 1's edge after the version cell is finalized (see the
-# effort right-align pass below Format-ExtraUsage). Built in natural (1-space) form, which is
-# also the width Format-ExtraUsage measures to size column 1. Mirrors Bash.
+# Split the fused cell into a prefix (bare model name) and the effort group so the effort can be
+# right-aligned to column 1's edge after the version cell is finalized (see the effort
+# right-align pass below Format-ExtraUsage). The ✦ thinking marker joins the effort GROUP (not
+# the prefix) so the right-align pad lands between the model name and '✦ effort', keeping the ✦
+# flush against the effort word at the pipe. Built in natural (1-space) form, which is also the
+# width Format-ExtraUsage measures to size column 1. Mirrors Bash.
+if ($thinkingEnabled -eq $true) { $effortPart = "${purple}✦${reset} ${effortPart}" }
 $modelPrefix = "${blue}${modelName}${reset}"
-if ($thinkingEnabled -eq $true) { $modelPrefix += " ${purple}✦${reset}" }
 $modelCell = "${modelPrefix} ${effortPart}"
 
 # Worktree name — read before the cwd block so it can ride on row 1's branch. stdin
@@ -249,9 +251,9 @@ if ($cwd) {
     try {
         $gitBranch = git -C $cwd rev-parse --abbrev-ref HEAD 2>$null
     } catch {}
-    $cwdCell = "${blue}${displayDir}${reset}"
+    $cwdCell = "${green}${displayDir}${reset}"
     if ($gitBranch) {
-        $cwdCell += "${dim}@${reset}${green}${gitBranch}${reset}"
+        $cwdCell += "${dim}@${reset}${blue}${gitBranch}${reset}"
         # Worktree rides on the end of the branch as ':name' (dim ':' + cyan name), only in
         # --worktree sessions; the colon and name hide together otherwise.
         if ($worktreeName) { $cwdCell += "${dim}:${reset}${cyan}${worktreeName}${reset}" }
@@ -665,7 +667,7 @@ if ($extraDollars) {
 # doesn't drift when the version+dollars cell is the wider of the two — otherwise the generic
 # pad pass would add the slack AFTER the effort word (high dollars widened col 1 and pushed
 # 'effort' off the pipe). Col 1's width is max(model natural, finalized version cell); pad
-# BETWEEN the model/✦ prefix and effort (1-space minimum). Run unconditionally, mirroring Bash.
+# BETWEEN the model name and the '✦ effort' group (1-space min). Run unconditionally, mirroring Bash.
 $mCol = [math]::Max((Get-VisibleLength $versionCell), (Get-VisibleLength $modelCell))
 $mPfxW = Get-VisibleLength $modelPrefix
 $mEffW = Get-VisibleLength $effortPart

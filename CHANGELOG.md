@@ -8,6 +8,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Both implementations — `statusline.sh` (Bash) and `statusline.ps1` (PowerShell) — are
 functional mirrors; every entry below applies to both unless noted.
 
+## [1.8.2] - 2026-07-05
+
+### Changed
+- **Folder and branch colors swapped (both):** row 1's `folder@branch` cell now renders the
+  folder name in green and the branch in the model's blue (previously blue folder / green
+  branch). The worktree suffix and row-2 path stay cyan.
+
+### Fixed
+- **Thinking `✦` marker stays flush with the effort word (both):** when extended thinking is
+  enabled, the `✦` now right-aligns alongside the reasoning effort at column 1's edge instead
+  of sitting glued to the model name while the alignment gap opened up *after* it. The marker
+  moved into the effort group, so the right-align padding now falls between the model name and
+  `✦ effort` — the same treatment the effort word itself already received in 1.8.0.
+
 ## [1.8.1] - 2026-07-05
 
 ### Changed

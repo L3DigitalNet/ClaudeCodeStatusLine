@@ -20,7 +20,7 @@
 
 set -f  # disable globbing
 shopt -s extglob  # extended globs in ${var//pat/} — visible_len strips SGR escapes with *([0-9;])
-VERSION="1.8.1"
+VERSION="1.8.2"
 
 input=$(cat)
 
@@ -249,12 +249,14 @@ case "$effort_level" in
     max)    effort_part="${red}${effort_level}${reset}" ;;
     *)      effort_part="${green}${effort_level}${reset}" ;;
 esac
-# Split the fused cell into a prefix (model name + optional ✦) and the effort word so the
-# effort can be right-aligned to column 1's edge after the version cell is finalized (see the
-# effort right-align pass below render_extra_usage). Built here in natural (1-space) form,
-# which is also the width render_extra_usage measures to size column 1.
+# Split the fused cell into a prefix (bare model name) and the effort group so the effort can
+# be right-aligned to column 1's edge after the version cell is finalized (see the effort
+# right-align pass below render_extra_usage). The ✦ thinking marker joins the effort GROUP (not
+# the prefix) so the right-align pad lands between the model name and '✦ effort', keeping the ✦
+# flush against the effort word at the pipe. Built here in natural (1-space) form, which is also
+# the width render_extra_usage measures to size column 1.
+[ "$thinking_enabled" = "true" ] && effort_part="${purple}✦${reset} ${effort_part}"
 model_prefix="${blue}${model_name}${reset}"
-[ "$thinking_enabled" = "true" ] && model_prefix+=" ${purple}✦${reset}"
 model_cell="${model_prefix} ${effort_part}"
 
 # Worktree name — read before the cwd block so it can ride on row 1's branch. stdin
@@ -273,9 +275,9 @@ diff_removed_cell=""
 if [ -n "$cwd" ]; then
     display_dir="${cwd##*/}"
     git_branch=$(git -C "${cwd}" rev-parse --abbrev-ref HEAD 2>/dev/null)
-    cwd_cell="${blue}${display_dir}${reset}"
+    cwd_cell="${green}${display_dir}${reset}"
     if [ -n "$git_branch" ]; then
-        cwd_cell+="${dim}@${reset}${green}${git_branch}${reset}"
+        cwd_cell+="${dim}@${reset}${blue}${git_branch}${reset}"
         # Worktree rides on the end of the branch as ':name' (dim ':' + cyan name), only in
         # --worktree sessions; the colon and name hide together otherwise.
         [ -n "$worktree_name" ] && cwd_cell+="${dim}:${reset}${cyan}${worktree_name}${reset}"
@@ -710,7 +712,7 @@ fi
 # doesn't drift when the version+dollars cell is the wider of the two — otherwise the generic
 # pad pass would add the slack AFTER the effort word (that trailing pad was the bug: high
 # dollars widened col 1, pushing 'effort' off the pipe). Col 1's width is max(model natural,
-# finalized version cell); pad BETWEEN the model/✦ prefix and effort (1-space minimum). Same
+# finalized version cell); pad BETWEEN the model name and the '✦ effort' group (1-space min). Same
 # sub-align idiom as the extra dollars / token % / Fable %; run unconditionally (not just when
 # dollars exist) so col 1 stays right-aligned whichever cell is wider.
 m_col=$(visible_len "$version_cell")
