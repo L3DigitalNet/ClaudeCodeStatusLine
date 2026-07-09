@@ -19,12 +19,10 @@ Opus 4.8 1M ✦ high | 435k/1M 44% | 5h  4%    @16:40 | +12 | hw-radar@main:my-w
 v2.1.198    $0/$25 | Fable   79% | 7d 12% Sun@19:00 | -3  | ~/projects/hw-radar
 ```
 
-(The token and Fable percentages right-align to column 2's edge so they stack vertically,
-and the effort word and extra-usage dollars right-align to column 1's edge, so `effort`
-sits flush over the dollars regardless of how wide the credits figure grows.)
+(The token and Fable percentages right-align to column 2's edge so they stack vertically, and the effort word and extra-usage dollars right-align to column 1's edge, so `effort` sits flush over the dollars regardless of how wide the credits figure grows.)
 
 | Cell | Position | Description |
-|------|----------|-------------|
+| --- | --- | --- |
 | **Model + Effort** | row 1, col 1 | Model name (a `(1M context)` suffix collapses to `1M`), a `✦` when extended thinking is enabled, and the reasoning effort level (`low`, `med`, `high`, `xhigh`, `max`). The effort word right-aligns to the column edge, stacking over the extra-usage dollars below it |
 | **Tokens** | row 1, col 2 | Used / total context-window tokens and % used (the % right-aligns to the column edge, stacking under the Fable %) |
 | **5h** | row 1, col 3 | 5-hour rate-limit usage percentage and reset time |
@@ -44,7 +42,7 @@ Usage percentages are floored and color-coded: green (&lt;50%) → yellow (≥50
 
 Ask Claude Code:
 
-> Clone https://github.com/chrisdpurcell/ClaudeCodeStatusLine to `~/.claude/statusline/` (or `%USERPROFILE%\.claude\statusline\` on Windows) and configure it as my status bar by following its INSTALL.md.
+> Clone <https://github.com/chrisdpurcell/ClaudeCodeStatusLine> to `~/.claude/statusline/` (or `%USERPROFILE%\.claude\statusline\` on Windows) and configure it as my status bar by following its INSTALL.md.
 
 Claude will clone the repo to that path, pick the right script for your OS, and update `settings.json`. Full step-by-step instructions Claude follows live in [INSTALL.md](INSTALL.md).
 
@@ -99,6 +97,4 @@ MIT — see [LICENSE](LICENSE).
 
 Originally created by **Daniel Oliveira** ([@daniel3303](https://github.com/daniel3303/ClaudeCodeStatusLine)). This repository is an independent continuation, now maintained by **Chris Purcell** ([@chrisdpurcell](https://github.com/chrisdpurcell)). Thanks to Daniel for the original work.
 
-[![Website](https://img.shields.io/badge/Website-FF6B6B?style=for-the-badge&logo=safari&logoColor=white)](https://danielapoliveira.com/)
-[![X](https://img.shields.io/badge/X-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/daniel_not_nerd)
-[![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/daniel-ap-oliveira/)
+[![Website](https://img.shields.io/badge/Website-FF6B6B?style=for-the-badge&logo=safari&logoColor=white)](https://danielapoliveira.com/) [![X](https://img.shields.io/badge/X-000000?style=for-the-badge&logo=x&logoColor=white)](https://x.com/daniel_not_nerd) [![LinkedIn](https://img.shields.io/badge/LinkedIn-0077B5?style=for-the-badge&logo=linkedin&logoColor=white)](https://www.linkedin.com/in/daniel-ap-oliveira/)

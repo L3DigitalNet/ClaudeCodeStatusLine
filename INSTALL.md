@@ -31,22 +31,17 @@ Add (or update) the `statusLine` key in `~/.claude/settings.json` (Unix) or `%US
 **macOS / Linux**
 
 ```json
-{
-  "statusLine": {
-    "type": "command",
-    "command": "~/.claude/statusline/statusline.sh"
-  }
-}
+{ "statusLine": { "type": "command", "command": "~/.claude/statusline/statusline.sh" } }
 ```
 
 **Windows**
 
 ```json
 {
-  "statusLine": {
-    "type": "command",
-    "command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ~/.claude/statusline/statusline.ps1"
-  }
+	"statusLine": {
+		"type": "command",
+		"command": "pwsh -NoProfile -ExecutionPolicy Bypass -File ~/.claude/statusline/statusline.ps1"
+	}
 }
 ```
 
@@ -54,10 +49,10 @@ If PowerShell 7+ (`pwsh`) is not installed, fall back to Windows PowerShell 5.1:
 
 ```json
 {
-  "statusLine": {
-    "type": "command",
-    "command": "powershell -NoProfile -ExecutionPolicy Bypass -File ~/.claude/statusline/statusline.ps1"
-  }
+	"statusLine": {
+		"type": "command",
+		"command": "powershell -NoProfile -ExecutionPolicy Bypass -File ~/.claude/statusline/statusline.ps1"
+	}
 }
 ```
 
