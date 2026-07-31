@@ -2,8 +2,6 @@
 # This repo is cloned to ~/.claude/statusline, so anything tracked ships to every user.
 CLAUDE.md
 handoff.md
-docs/
-tests/
 AGENTS.md
 
 # OS / editor cruft
