@@ -1,0 +1,757 @@
+#!/usr/bin/python3
+"""Render the Claude Code status line with the observable contract of statusline.sh.
+
+Rich owns terminal styling while Humanize supplies the SI token prefixes. External
+commands are always invoked with argument vectors; OAuth credentials reach curl only
+through its stdin configuration and are never persisted or placed in process argv.
+"""
+
+from __future__ import annotations
+
+import hashlib
+import json
+import os
+import re
+import subprocess
+import sys
+import time
+from datetime import datetime, timezone
+from decimal import Decimal, InvalidOperation, ROUND_HALF_UP
+from pathlib import Path
+from typing import Any
+
+import humanize
+from rich.color import ColorSystem
+from rich.style import Style
+
+VERSION = "1.8.2"
+BLUE = "rgb(0,153,255)"
+ORANGE = "rgb(255,176,85)"
+GREEN = "rgb(0,160,0)"
+CYAN = "rgb(46,149,153)"
+RED = "rgb(255,85,85)"
+YELLOW = "rgb(230,200,0)"
+PURPLE = "rgb(167,139,250)"
+WHITE = "rgb(220,220,220)"
+DIM = "dim"
+WEEKDAYS = ("Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun")
+
+
+class Text:
+    """Accumulate literal bytes-to-be with program-owned Rich styles.
+
+    Rich's high-level Text renderer normalizes terminal controls embedded in
+    content. The Bash contract preserves those bytes, so literal content stays
+    in raw segments and only Style.render participates in final serialization.
+    """
+
+    def __init__(self, value: object = "", style: str | None = None) -> None:
+        self.segments: list[tuple[str, str | None]] = []
+        content = str(value)
+        if content or style is not None:
+            self.segments.append((content, style))
+
+    @property
+    def plain(self) -> str:
+        return "".join(content for content, _style in self.segments)
+
+    def append_text(self, other: Text) -> None:
+        self.segments.extend(other.segments)
+
+    def append(self, value: object) -> None:
+        content = str(value)
+        if content:
+            self.segments.append((content, None))
+
+    def __bool__(self) -> bool:
+        return bool(self.segments)
+
+    def render(self) -> str:
+        rendered: list[str] = []
+        for content, style_name in self.segments:
+            if style_name is None:
+                rendered.append(content)
+                continue
+            style = Style.parse(style_name)
+            if content:
+                rendered.append(style.render(content, color_system=ColorSystem.TRUECOLOR))
+            else:
+                # Bash style variables contain real prefix/reset bytes even when the
+                # styled value is empty; keeping them also keeps the trailing cell alive.
+                marker = style.render("x", color_system=ColorSystem.TRUECOLOR)
+                rendered.append(marker.replace("x", "", 1))
+        return "".join(rendered)
+
+
+def text(value: object = "", style: str | None = None) -> Text:
+    """Return literal text with only a program-owned Rich style applied."""
+    return Text(str(value), style=style)
+
+
+def combine(*parts: Text | str) -> Text:
+    result = Text()
+    for part in parts:
+        if isinstance(part, Text):
+            result.append_text(part)
+        else:
+            result.append(part)
+    return result
+
+
+def visible_len(value: Text) -> int:
+    """Return the Bash renderer's deliberately narrow display-width approximation."""
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", value.plain)
+    return len(plain.replace("✦", ".").replace("😢", ".."))
+
+
+def padded(value: Text, width: int) -> Text:
+    return combine(value, " " * max(0, width - visible_len(value)))
+
+
+def nested(data: object, *keys: str, default: object = None) -> object:
+    current = data
+    for key in keys:
+        if not isinstance(current, dict) or key not in current or current[key] is None:
+            return default
+        current = current[key]
+    return current
+
+
+def number(value: object, default: Decimal = Decimal(0)) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return default
+
+
+def integer(value: object, default: int = 0) -> int:
+    try:
+        return int(number(value))
+    except (OverflowError, ValueError):
+        return default
+
+
+def format_tokens(value: object) -> str:
+    """Format a token count with Bash-compatible half-up SI boundaries.
+
+    Humanize renders the k prefix after Decimal normalizes the reference
+    renderer's rounding boundary. The M branch stays explicit because Bash
+    never promotes large counts to Humanize's G/T units.
+    """
+    amount = number(value)
+    if amount >= 1_000_000:
+        millions = (amount / Decimal(1_000_000)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        rendered = f"{millions.normalize():f}M"
+    elif amount >= 1_000:
+        thousands = (amount / Decimal(1_000)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        if thousands >= 1_000:
+            rendered = humanize.metric(1_000_000, precision=0)
+        else:
+            rendered = humanize.metric(int(thousands * 1_000), precision=0)
+    else:
+        rendered = str(integer(amount))
+    compact = rendered.replace(" ", "")
+    return re.sub(r"\.0([kM])$", r"\1", compact)
+
+
+def resolve_runtime_paths() -> tuple[str, str]:
+    """Return Bash-compatible config and cache paths without normalizing strings."""
+    home = os.environ.get("HOME", "")
+    config_dir = os.environ.get("CLAUDE_CONFIG_DIR") or f"{home}/.claude"
+    runtime_dir = os.environ.get("XDG_RUNTIME_DIR") or "/tmp"
+    return config_dir, f"{runtime_dir}/claude"
+
+
+def usage_style(percent: int) -> str:
+    if percent >= 90:
+        return RED
+    if percent >= 70:
+        return ORANGE
+    if percent >= 50:
+        return YELLOW
+    return GREEN
+
+
+def collapse_home(path: str, home: str) -> str:
+    if home and path == home:
+        return "~"
+    if home and path.startswith(home + "/"):
+        return "~" + path[len(home) :]
+    return path
+
+
+def run_command(
+    args: list[str],
+    *,
+    stdin: str | None = None,
+    keep_stdout_on_error: bool = False,
+    preserve_opaque_bytes: bool = False,
+) -> str:
+    """Return stdout for a quiet external probe, or an empty string on any failure."""
+    try:
+        completed = subprocess.run(
+            args,
+            input=stdin,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape" if preserve_opaque_bytes else "strict",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            shell=False,
+        )
+    except (OSError, UnicodeError):
+        return ""
+    return completed.stdout if completed.returncode == 0 or keep_stdout_on_error else ""
+
+
+def read_json(path: Path) -> dict[str, Any] | None:
+    try:
+        value = json.loads(path.read_text())
+    except (OSError, UnicodeError, json.JSONDecodeError):
+        return None
+    return value if isinstance(value, dict) else None
+
+
+def write_json(path: Path, value: dict[str, Any]) -> None:
+    try:
+        path.write_text(json.dumps(value, separators=(",", ":")))
+    except OSError:
+        pass
+
+
+def file_age(path: Path) -> float | None:
+    try:
+        return time.time() - path.stat().st_mtime
+    except OSError:
+        return None
+
+
+def load_cli_version(data: dict[str, Any], cache_dir: Path) -> str:
+    stdin_version = nested(data, "version", default="")
+    if stdin_version not in (None, ""):
+        return str(stdin_version)
+    cache = cache_dir / "statusline-cli-version"
+    if (age := file_age(cache)) is not None and age < 3600:
+        try:
+            # The CLI-version cache is opaque command output, not structured text.
+            # Surrogate escapes keep invalid bytes round-trippable like Bash variables.
+            cached = cache.read_bytes().decode("utf-8", errors="surrogateescape")
+        except OSError:
+            cached = ""
+        if cached:
+            return cached.strip("\n")
+    output = run_command(["claude", "--version"], preserve_opaque_bytes=True)
+    version = output.split()[0] if output.split() else ""
+    if version:
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            cache.write_bytes((version + "\n").encode("utf-8", errors="surrogateescape"))
+        except OSError:
+            pass
+    return version
+
+
+def oauth_token(config_dir: Path, explicit_config: str) -> str:
+    """Resolve the OAuth token in the Bash renderer's credential-source order."""
+    if token := os.environ.get("CLAUDE_CODE_OAUTH_TOKEN", ""):
+        return token
+
+    service = "Claude Code-credentials"
+    if explicit_config:
+        suffix = hashlib.sha256(explicit_config.encode()).hexdigest()[:8]
+        service += f"-{suffix}"
+    blob = run_command(["security", "find-generic-password", "-s", service, "-w"])
+    if blob:
+        try:
+            token = nested(json.loads(blob), "claudeAiOauth", "accessToken", default="")
+            if token:
+                return str(token)
+        except json.JSONDecodeError:
+            pass
+
+    credentials = read_json(config_dir / ".credentials.json")
+    if credentials:
+        token = nested(credentials, "claudeAiOauth", "accessToken", default="")
+        if token:
+            return str(token)
+
+    blob = run_command(
+        ["timeout", "2", "secret-tool", "lookup", "service", "Claude Code-credentials"],
+    )
+    if blob:
+        try:
+            token = nested(json.loads(blob), "claudeAiOauth", "accessToken", default="")
+            if token:
+                return str(token)
+        except json.JSONDecodeError:
+            pass
+    return ""
+
+
+def curl_usage(token: str, client_version: str) -> dict[str, Any] | None:
+    # The config-on-stdin transport is load-bearing: an Authorization header in argv
+    # would expose the token through process listings for the request's lifetime.
+    response = run_command(
+        [
+            "curl",
+            "-s",
+            "--max-time",
+            "10",
+            "-H",
+            "Accept: application/json",
+            "-H",
+            "Content-Type: application/json",
+            "-H",
+            "anthropic-beta: oauth-2025-04-20",
+            "-H",
+            f"User-Agent: claude-code/{client_version}",
+            "--config",
+            "-",
+            "https://api.anthropic.com/api/oauth/usage",
+        ],
+        stdin=f'header = "Authorization: Bearer {token}"\n',
+    )
+    try:
+        parsed = json.loads(response)
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(parsed, dict):
+        return None
+    five_hour = parsed.get("five_hour")
+    if five_hour is None or five_hour is False:
+        return None
+    return parsed
+
+
+def usage_sources(
+    data: dict[str, Any], config_dir_string: str, config_dir: Path, cache_dir: Path, cli_version: str
+) -> tuple[bool, object, object, object, object, dict[str, Any] | None, Path]:
+    five_pct = nested(data, "rate_limits", "five_hour", "used_percentage")
+    five_reset = nested(data, "rate_limits", "five_hour", "resets_at")
+    seven_pct = nested(data, "rate_limits", "seven_day", "used_percentage")
+    seven_reset = nested(data, "rate_limits", "seven_day", "resets_at")
+    use_builtin = five_pct is not None or seven_pct is not None
+
+    config_hash = hashlib.sha256(config_dir_string.encode()).hexdigest()[:8]
+    cache_file = cache_dir / f"statusline-usage-cache-{config_hash}.json"
+    fetch_stamp = cache_dir / f"statusline-usage-fetched-{config_hash}"
+    try:
+        cache_dir.mkdir(parents=True, exist_ok=True)
+    except OSError:
+        pass
+    usage_data = read_json(cache_file)
+
+    effective_builtin = False
+    if use_builtin:
+        effective_builtin = integer(five_pct) != 0 or integer(seven_pct) != 0
+        if not effective_builtin:
+            effective_builtin = five_reset not in (None, "", 0, "0", "null") or seven_reset not in (
+                None,
+                "",
+                0,
+                "0",
+                "null",
+            )
+
+    stamp_age = file_age(fetch_stamp)
+    if stamp_age is None or stamp_age >= 60:
+        try:
+            fetch_stamp.touch()
+        except OSError:
+            pass
+        explicit_config = os.environ.get("CLAUDE_CONFIG_DIR", "")
+        token = oauth_token(config_dir, explicit_config)
+        if token and token != "null":
+            client_version = str(nested(data, "version", default="") or cli_version or "2.1.197")
+            fetched = curl_usage(token, client_version)
+            if fetched is not None:
+                usage_data = fetched
+                write_json(cache_file, fetched)
+    return effective_builtin, five_pct, five_reset, seven_pct, seven_reset, usage_data, cache_file
+
+
+def local_time(epoch: object, *, weekly: bool = False) -> tuple[str, str]:
+    try:
+        moment = datetime.fromtimestamp(float(str(epoch))).astimezone()
+    except (ValueError, OverflowError, OSError):
+        return "", ""
+    return (WEEKDAYS[moment.weekday()] if weekly else "", moment.strftime("%H:%M"))
+
+
+def parse_iso(value: object) -> datetime | None:
+    if value in (None, "", "null"):
+        return None
+    raw = str(value)
+    try:
+        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.astimezone()
+    else:
+        parsed = parsed.astimezone()
+    return parsed
+
+
+def extra_fragment(usage_data: dict[str, Any] | None) -> Text:
+    if not usage_data or nested(usage_data, "extra_usage", "is_enabled", default=False) is not True:
+        return Text()
+    raw_used = nested(usage_data, "extra_usage", "used_credits")
+    raw_limit = nested(usage_data, "extra_usage", "monthly_limit")
+    numeric = re.compile(r"^[0-9]+(?:\.[0-9]+)?$")
+    if not numeric.fullmatch(str(raw_used)) or not numeric.fullmatch(str(raw_limit)):
+        return text("enabled", GREEN)
+
+    def credits(raw: object) -> str:
+        dollars = number(raw) / 100
+        if dollars == dollars.to_integral_value():
+            return str(int(dollars))
+        return f"{dollars:.2f}"
+
+    percent = integer(nested(usage_data, "extra_usage", "utilization", default=0))
+    return text(f"${credits(raw_used)}/${credits(raw_limit)}", usage_style(percent))
+
+
+def fable_cell(usage_data: dict[str, Any] | None, token_width: int) -> Text:
+    percent_text = "😢"
+    style: str | None = None
+    limits = usage_data.get("limits") if usage_data else None
+    if isinstance(limits, list):
+        for limit in limits:
+            if nested(limit, "scope", "model", "display_name", default="") == "Fable":
+                candidate = nested(limit, "percent")
+                if re.fullmatch(r"[0-9]+(?:\.[0-9]+)?", str(candidate)):
+                    percent = integer(candidate)
+                    percent_text = f"{percent}%"
+                    style = usage_style(percent)
+                break
+    value_width = len(percent_text.replace("😢", ".."))
+    target = max(token_width, 5 + 1 + value_width)
+    value = text(percent_text, style)
+    if style is None:
+        # Bash's unavailable branch deliberately sets the color variable to RESET,
+        # leaving reset escapes around the emoji even though no color is active.
+        value = text(f"\x1b[0m{percent_text}\x1b[0m")
+    return combine(text("Fable", WHITE), " " * (target - 5 - value_width), value)
+
+
+def rewrite_builtin_cache(
+    cache_file: Path,
+    usage_data: dict[str, Any] | None,
+    five_pct: object,
+    five_reset: object,
+    seven_pct: object,
+    seven_reset: object,
+) -> None:
+    def iso(epoch: object) -> str | None:
+        if epoch in (None, "", 0, "0", "null"):
+            return None
+        try:
+            return datetime.fromtimestamp(float(str(epoch)), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+        except (ValueError, OverflowError, OSError):
+            return None
+
+    # limits and extra_usage are API-only. Dropping them during the builtin rewrite
+    # makes the Fable and dollars cells flicker on every sub-minute cached render.
+    rewritten = {
+        "five_hour": {"utilization": five_pct or 0, "resets_at": iso(five_reset)},
+        "seven_day": {"utilization": seven_pct or 0, "resets_at": iso(seven_reset)},
+        "limits": usage_data.get("limits") if usage_data else None,
+        "extra_usage": usage_data.get("extra_usage") if usage_data else None,
+    }
+    write_json(cache_file, rewritten)
+
+
+def usage_cells(
+    effective_builtin: bool,
+    five_pct: object,
+    five_reset: object,
+    seven_pct: object,
+    seven_reset: object,
+    usage_data: dict[str, Any] | None,
+    cache_file: Path,
+) -> tuple[Text, Text]:
+    fh_text, fh_style, fh_time = "-", DIM, ""
+    sd_text, sd_style, sd_prefix, sd_time = "-", DIM, "", ""
+    if effective_builtin:
+        if five_pct is not None:
+            percent = integer(five_pct)
+            fh_text, fh_style = f"{percent}%", usage_style(percent)
+            _, reset = local_time(five_reset)
+            fh_time = f"@{reset}" if reset else ""
+        if seven_pct is not None:
+            percent = integer(seven_pct)
+            sd_text, sd_style = f"{percent}%", usage_style(percent)
+            sd_prefix, reset = local_time(seven_reset, weekly=True)
+            sd_time = f"@{reset}" if reset else ""
+        rewrite_builtin_cache(
+            cache_file, usage_data, five_pct, five_reset, seven_pct, seven_reset
+        )
+    elif usage_data and usage_data.get("five_hour") is not None and usage_data.get("five_hour") is not False:
+        five = usage_data["five_hour"]
+        seven = usage_data.get("seven_day")
+        if isinstance(five, dict):
+            percent = integer(nested(five, "utilization", default=0))
+            fh_text, fh_style = f"{percent}%", usage_style(percent)
+            moment = parse_iso(nested(five, "resets_at"))
+        else:
+            # jq accepts every value except null/false at the response gate, then
+            # member access on a scalar yields an empty utilization in this pipeline.
+            fh_text, fh_style, moment = "%", GREEN, None
+        fh_time = f"@{moment:%H:%M}" if moment else ""
+        if isinstance(seven, dict):
+            percent = integer(nested(seven, "utilization", default=0))
+            moment = parse_iso(nested(seven, "resets_at"))
+            if moment:
+                sd_prefix, sd_time = WEEKDAYS[moment.weekday()], f"@{moment:%H:%M}"
+        else:
+            percent = 0
+            moment = None
+        sd_text, sd_style = f"{percent}%", usage_style(percent)
+
+    percent_width = max(len(fh_text), len(sd_text))
+    prefix_width = len(sd_prefix)
+    five_cell = combine(
+        text("5h", WHITE),
+        " ",
+        " " * (percent_width - len(fh_text)),
+        text(fh_text, fh_style),
+    )
+    if fh_time:
+        five_cell = combine(five_cell, " ", " " * prefix_width, text(fh_time, DIM))
+    seven_cell = combine(
+        text("7d", WHITE),
+        " ",
+        " " * (percent_width - len(sd_text)),
+        text(sd_text, sd_style),
+    )
+    if sd_time:
+        seven_cell = combine(seven_cell, " ", text(sd_prefix + sd_time, DIM))
+    return five_cell, seven_cell
+
+
+def version_tuple(value: str) -> tuple[int, int, int]:
+    pieces = value.removeprefix("v").split(".")[:3]
+    parsed: list[int] = []
+    for piece in pieces:
+        try:
+            parsed.append(int(piece or 0))
+        except ValueError:
+            parsed.append(0)
+    normalized = (parsed + [0, 0, 0])[:3]
+    return normalized[0], normalized[1], normalized[2]
+
+
+def update_notice(cache_dir: Path) -> Text:
+    if os.environ.get("STATUSLINE_CHECK_UPDATES", "true") == "false":
+        return Text()
+    cache = cache_dir / "statusline-version-cache.json"
+    data = read_json(cache)
+    age = file_age(cache)
+    if age is None or age >= 86400:
+        try:
+            cache.parent.mkdir(parents=True, exist_ok=True)
+            cache.touch()
+        except OSError:
+            pass
+        response = run_command(
+            [
+                "curl",
+                "-s",
+                "--max-time",
+                "5",
+                "-H",
+                "Accept: application/vnd.github+json",
+                "https://api.github.com/repos/chrisdpurcell/ClaudeCodeStatusLine/releases/latest",
+            ],
+        )
+        try:
+            fetched = json.loads(response)
+        except json.JSONDecodeError:
+            fetched = None
+        tag_value = fetched.get("tag_name") if isinstance(fetched, dict) else None
+        if isinstance(fetched, dict) and tag_value is not None and tag_value is not False:
+            data = fetched
+            write_json(cache, fetched)
+        elif not cache.exists() or cache.stat().st_size == 0:
+            try:
+                cache.unlink()
+            except OSError:
+                pass
+    if not data:
+        return Text()
+    tag = re.sub(r"[^v0-9.]", "", str(data.get("tag_name", "")))
+    if tag and version_tuple(tag) > version_tuple(VERSION):
+        return combine(
+            "\n",
+            text(
+                f'Update available: {tag} → Tell Claude: "Find my installed status bar and update it"',
+                DIM,
+            ),
+        )
+    return Text()
+
+
+def render(data: dict[str, Any], *, jq_error: bool = False) -> Text:
+    home = os.environ.get("HOME", "")
+    config_dir_string, cache_dir_string = resolve_runtime_paths()
+    config_dir = Path(config_dir_string)
+    cache_dir = Path(cache_dir_string)
+
+    model_name = str(nested(data, "model", "display_name", default="" if jq_error else "Claude"))
+    model_name = re.sub(r"\s*\(([0-9]+\.?[0-9]*[kKmM])\s+context\)", r" \1", model_name).strip()
+    default_size = 0 if jq_error else 200000
+    size = integer(nested(data, "context_window", "context_window_size", default=default_size), default_size)
+    if size == 0 and not jq_error:
+        size = 200000
+    current = sum(
+        integer(nested(data, "context_window", "current_usage", key, default=0))
+        for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+    )
+    supplied_percent = nested(data, "context_window", "used_percentage")
+    percent_used = (
+        integer(supplied_percent)
+        if supplied_percent is not None
+        else current * 100 // size if size > 0 else 0
+    )
+
+    effort = nested(data, "effort", "level", default="")
+    if not effort:
+        effort = os.environ.get("CLAUDE_CODE_EFFORT_LEVEL", "")
+    if not effort:
+        settings = read_json(config_dir / "settings.json")
+        effort = settings.get("effortLevel", "") if settings else ""
+    effort_level = str(effort or "medium").lower()
+    effort_label = "med" if effort_level == "medium" else effort_level
+    effort_style = {
+        "low": DIM,
+        "medium": ORANGE,
+        "high": GREEN,
+        "xhigh": PURPLE,
+        "max": RED,
+    }.get(effort_level, GREEN)
+    effort_part = text(effort_label, effort_style)
+    if nested(data, "thinking", "enabled", default=False) is True:
+        effort_part = combine(text("✦", PURPLE), " ", effort_part)
+    model_prefix = text(model_name, BLUE)
+    model_cell = combine(model_prefix, " ", effort_part)
+
+    cli_version = load_cli_version(data, cache_dir)
+    version_cell = text(f"v{cli_version}", ORANGE) if cli_version else text("-", DIM)
+
+    tokens_prefix = text(f"{format_tokens(current)}/{format_tokens(size)}", ORANGE)
+    tokens_percent = text(f"{percent_used}%", GREEN)
+    tokens_cell = combine(tokens_prefix, " ", tokens_percent)
+
+    effective_builtin, five_pct, five_reset, seven_pct, seven_reset, usage_data, cache_file = (
+        usage_sources(data, config_dir_string, config_dir, cache_dir, cli_version)
+    )
+    five_cell, seven_cell = usage_cells(
+        effective_builtin,
+        five_pct,
+        five_reset,
+        seven_pct,
+        seven_reset,
+        usage_data,
+        cache_file,
+    )
+
+    dollars = extra_fragment(usage_data)
+    if dollars:
+        target = max(visible_len(model_cell), visible_len(version_cell) + 2 + visible_len(dollars))
+        gap = target - visible_len(version_cell) - visible_len(dollars)
+        version_cell = combine(version_cell, " " * gap, dollars)
+
+    model_width = max(visible_len(version_cell), visible_len(model_cell))
+    model_gap = max(1, model_width - visible_len(model_prefix) - visible_len(effort_part))
+    model_cell = combine(model_prefix, " " * model_gap, effort_part)
+
+    fable = fable_cell(usage_data, visible_len(tokens_cell))
+    token_width = max(visible_len(fable), visible_len(tokens_cell))
+    token_gap = max(1, token_width - visible_len(tokens_prefix) - visible_len(tokens_percent))
+    tokens_cell = combine(tokens_prefix, " " * token_gap, tokens_percent)
+
+    cwd = nested(data, "workspace", "current_dir", default=None)
+    if cwd is None:
+        cwd = nested(data, "cwd", default="")
+    cwd_string = str(cwd or "")
+    cwd_cell = Text()
+    path_cell = Text()
+    added_cell = Text()
+    removed_cell = Text()
+    if cwd_string:
+        display_dir = cwd_string.rsplit("/", 1)[-1]
+        branch = run_command(
+            ["git", "-C", cwd_string, "rev-parse", "--abbrev-ref", "HEAD"],
+            keep_stdout_on_error=True,
+        ).strip()
+        cwd_cell = text(display_dir, GREEN)
+        if branch:
+            cwd_cell = combine(cwd_cell, text("@", DIM), text(branch, BLUE))
+            worktree = nested(data, "worktree", "name", default="")
+            if worktree:
+                cwd_cell = combine(cwd_cell, text(":", DIM), text(str(worktree), CYAN))
+            diff = run_command(["git", "-C", cwd_string, "diff", "--numstat"])
+            added = removed = 0
+            changed = False
+            for line in diff.splitlines():
+                pieces = line.split("\t", 2)
+                if len(pieces) >= 2:
+                    a = integer(pieces[0])
+                    d = integer(pieces[1])
+                    added += a
+                    removed += d
+                    changed = changed or a + d > 0
+            if changed:
+                added_cell = text(f"+{added}", GREEN)
+                removed_cell = text(f"-{removed}", RED)
+        path_cell = text(collapse_home(cwd_string, home), CYAN)
+
+    row_one = [model_cell, tokens_cell, five_cell]
+    row_two = [version_cell, fable, seven_cell]
+    if added_cell:
+        row_one.append(added_cell)
+        row_two.append(removed_cell)
+    if cwd_cell:
+        row_one.append(cwd_cell)
+        row_two.append(path_cell)
+
+    separator = combine(" ", text("|", DIM), " ")
+    lines = [Text(), Text()]
+    for index in range(max(len(row_one), len(row_two))):
+        width = max(
+            visible_len(row_one[index]) if index < len(row_one) else 0,
+            visible_len(row_two[index]) if index < len(row_two) else 0,
+        )
+        for line, row in zip(lines, (row_one, row_two), strict=True):
+            if index >= len(row):
+                continue
+            cell = row[index]
+            line.append_text(padded(cell, width) if index < len(row) - 1 else cell)
+            if index < len(row) - 1:
+                line.append_text(separator)
+    return combine(lines[0], "\n", lines[1], update_notice(cache_dir))
+
+
+def main() -> int:
+    """Read the complete stdin event and print without a trailing newline."""
+    input_text = sys.stdin.read()
+    if not input_text:
+        sys.stdout.buffer.write(b"Claude")
+        return 0
+    try:
+        parsed = json.loads(input_text)
+    except json.JSONDecodeError:
+        parsed = None
+        jq_error = True
+    else:
+        jq_error = parsed is not None and not isinstance(parsed, dict)
+    data = parsed if isinstance(parsed, dict) else {}
+    serialized = render(data, jq_error=jq_error).render()
+    sys.stdout.buffer.write(serialized.encode("utf-8", errors="surrogateescape"))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
