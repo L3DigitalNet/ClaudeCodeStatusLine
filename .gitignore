@@ -3,6 +3,7 @@
 CLAUDE.md
 handoff.md
 AGENTS.md
+.claude/
 
 # Temporary & Scratch
 .workflow/
@@ -14,3 +15,4 @@ Thumbs.db
 .idea/
 *.swp
 *~
+.ruff_cache/

@@ -1,0 +1,497 @@
+#!/usr/bin/env python3
+"""Render the Claude Code subagent status line.
+
+Rich owns terminal styling while Humanize supplies SI token prefixes for task
+token counts. Accepts subagent task batches on stdin and outputs JSON task rows.
+"""
+
+from __future__ import annotations
+
+import json
+import os
+import re
+import subprocess
+import sys
+from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
+from typing import Any
+
+import humanize
+from rich.cells import cell_len
+from rich.color import ColorSystem
+from rich.style import Style
+
+VERSION = "1.8.2"
+BLUE = "rgb(0,153,255)"
+ORANGE = "rgb(255,176,85)"
+GREEN = "rgb(0,160,0)"
+CYAN = "rgb(46,149,153)"
+RED = "rgb(255,85,85)"
+YELLOW = "rgb(230,200,0)"
+PURPLE = "rgb(167,139,250)"
+WHITE = "rgb(220,220,220)"
+DIM = "dim"
+
+
+class Text:
+    """Accumulate literal bytes-to-be with program-owned Rich styles.
+
+    Rich's high-level Text renderer normalizes terminal controls embedded in
+    content. The Bash contract preserves those bytes, so literal content stays
+    in raw segments and only Style.render participates in final serialization.
+    """
+
+    def __init__(self, value: object = "", style: str | None = None) -> None:
+        self.segments: list[tuple[str, str | None]] = []
+        content = str(value)
+        if content or style is not None:
+            self.segments.append((content, style))
+
+    @property
+    def plain(self) -> str:
+        return "".join(content for content, _style in self.segments)
+
+    def append_text(self, other: Text) -> None:
+        self.segments.extend(other.segments)
+
+    def append(self, value: object) -> None:
+        content = str(value)
+        if content:
+            self.segments.append((content, None))
+
+    def __bool__(self) -> bool:
+        return bool(self.segments)
+
+    def render(self) -> str:
+        rendered: list[str] = []
+        for content, style_name in self.segments:
+            if style_name is None:
+                rendered.append(content)
+                continue
+            style = Style.parse(style_name)
+            if content:
+                rendered.append(
+                    style.render(content, color_system=ColorSystem.TRUECOLOR)
+                )
+            else:
+                marker = style.render("x", color_system=ColorSystem.TRUECOLOR)
+                rendered.append(marker.replace("x", "", 1))
+        return "".join(rendered)
+
+
+def text(value: object = "", style: str | None = None) -> Text:
+    """Return literal text with only a program-owned Rich style applied."""
+    return Text(str(value), style=style)
+
+
+def combine(*parts: Text | str) -> Text:
+    result = Text()
+    for part in parts:
+        if isinstance(part, Text):
+            result.append_text(part)
+        else:
+            result.append(part)
+    return result
+
+
+def visible_len(value: Text) -> int:
+    """Return terminal display-cell width of text, stripping SGR codes."""
+    plain = re.sub(r"\x1b\[[0-9;]*m", "", value.plain)
+    return cell_len(plain)
+
+
+def padded(value: Text, width: int) -> Text:
+    return combine(value, " " * max(0, width - visible_len(value)))
+
+
+def truncate_text(val: Text, max_w: int) -> Text:
+    """Truncate a Text object while preserving Rich styles on remaining segments."""
+    if visible_len(val) <= max_w:
+        return val
+    if max_w <= 1:
+        return text("…", DIM)
+
+    res = Text()
+    curr_w = 0
+    ellipsis_w = cell_len("…")
+    budget = max_w - ellipsis_w
+
+    for content, style in val.segments:
+        plain_content = re.sub(r"\x1b\[[0-9;]*m", "", content)
+        seg_w = cell_len(plain_content)
+        if curr_w + seg_w <= budget:
+            res.segments.append((content, style))
+            curr_w += seg_w
+        else:
+            avail = budget - curr_w
+            truncated_chars = []
+            char_w = 0
+            for char in content:
+                cw = cell_len(char)
+                if char_w + cw <= avail:
+                    truncated_chars.append(char)
+                    char_w += cw
+                else:
+                    break
+            if truncated_chars:
+                res.segments.append(("".join(truncated_chars), style))
+            break
+
+    res.segments.append(("…", DIM))
+    return res
+
+
+def sanitize_text(value: object, *, strip_spaces: bool = True) -> str:
+    """Sanitize task-controlled string inputs to prevent ANSI/control byte injection."""
+    if value is None or value is False:
+        return ""
+    val_str = str(value).replace("\0", "")
+    # Remove OSC sequences: \x1b]...\x07 or \x1b]...\x1b\
+    val_str = re.sub(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)", "", val_str)
+    # Remove SGR and other CSI escape sequences: \x1b[...]
+    val_str = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", val_str)
+    # Remove C0 and C1 control characters (0x00-0x1F, 0x7F-0x9F)
+    val_str = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", val_str)
+    return val_str.strip() if strip_spaces else val_str
+
+
+def nested(
+    data: object, *keys: str, default: object = None, strip_spaces: bool = True
+) -> object:
+    current = data
+    for key in keys:
+        if (
+            not isinstance(current, dict)
+            or key not in current
+            or current[key] is None
+            or current[key] is False
+        ):
+            return default
+        current = current[key]
+    if isinstance(current, str):
+        return sanitize_text(current, strip_spaces=strip_spaces)
+    return current
+
+
+def contains_surrogate(value: object) -> bool:
+    """Detect lone JSON surrogates that jq rejects but json.loads accepts."""
+    if isinstance(value, str):
+        return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+    if isinstance(value, dict):
+        return any(
+            contains_surrogate(key) or contains_surrogate(item)
+            for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(contains_surrogate(item) for item in value)
+    return False
+
+
+def number(value: object, default: Decimal = Decimal(0)) -> Decimal:
+    try:
+        return Decimal(str(value))
+    except (InvalidOperation, ValueError):
+        return default
+
+
+def integer(value: object, default: int = 0) -> int:
+    try:
+        return int(number(value))
+    except (OverflowError, ValueError):
+        return default
+
+
+def format_tokens(value: object) -> str:
+    """Format a token count with SI boundaries."""
+    amount = number(value)
+    if amount >= 1_000_000:
+        millions = (amount / Decimal(1_000_000)).quantize(
+            Decimal("0.1"), rounding=ROUND_HALF_UP
+        )
+        rendered = f"{millions.normalize():f}M"
+    elif amount >= 1_000:
+        thousands = (amount / Decimal(1_000)).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
+        if thousands >= 1_000:
+            rendered = humanize.metric(1_000_000, precision=0)
+        else:
+            rendered = humanize.metric(int(thousands * 1_000), precision=0)
+    else:
+        rendered = str(integer(amount))
+    compact = rendered.replace(" ", "")
+    return re.sub(r"\.0([kM])$", r"\1", compact)
+
+
+def collapse_home(path: str, home: str) -> str:
+    if home and path == home:
+        return "~"
+    if home and path.startswith(home + "/"):
+        return "~" + path[len(home) :]
+    return path
+
+
+def run_command(
+    args: list[str],
+    *,
+    stdin: str | None = None,
+    keep_stdout_on_error: bool = False,
+    preserve_opaque_bytes: bool = False,
+    timeout: float | None = 1.0,
+) -> str:
+    """Return stdout for a quiet external probe, or an empty string on any failure."""
+    try:
+        completed = subprocess.run(
+            args,
+            input=stdin,
+            text=True,
+            encoding="utf-8",
+            errors="surrogateescape" if preserve_opaque_bytes else "strict",
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            check=False,
+            shell=False,
+            timeout=timeout,
+        )
+    except (OSError, UnicodeError, ValueError, subprocess.TimeoutExpired):
+        return ""
+    output = (
+        completed.stdout if completed.returncode == 0 or keep_stdout_on_error else ""
+    )
+    return output.replace("\0", "")
+
+
+def discover_git_branches(cwds: set[str]) -> dict[str, str]:
+    """Batch-discover git branches once per unique CWD with short timeout."""
+    cache: dict[str, str] = {}
+    for cwd_str in cwds:
+        if not cwd_str:
+            continue
+        branch = run_command(
+            ["git", "-C", cwd_str, "rev-parse", "--abbrev-ref", "HEAD"],
+            keep_stdout_on_error=True,
+            preserve_opaque_bytes=True,
+            timeout=1.0,
+        ).strip()
+        if branch:
+            cache[cwd_str] = branch
+    return cache
+
+
+def build_grid_lines(row_one: list[Text], row_two: list[Text]) -> list[Text]:
+    separator = combine(" ", text("|", DIM), " ")
+    lines = [Text(), Text()]
+    max_cols = max(len(row_one), len(row_two))
+    for index in range(max_cols):
+        width = max(
+            visible_len(row_one[index]) if index < len(row_one) else 0,
+            visible_len(row_two[index]) if index < len(row_two) else 0,
+        )
+        for line, row in zip(lines, (row_one, row_two), strict=True):
+            if index >= len(row):
+                continue
+            cell = row[index]
+            line.append_text(padded(cell, width) if index < len(row) - 1 else cell)
+            if index < len(row) - 1:
+                line.append_text(separator)
+    return lines
+
+
+def render_task(
+    task: dict[str, Any],
+    max_columns: int,
+    git_branches: dict[str, str],
+) -> str:
+    """Render a single subagent task object into a width-aware status line."""
+    home = os.environ.get("HOME", "")
+
+    # Model
+    model_raw = nested(task, "model", "display_name", default=None)
+    if model_raw is None:
+        model_raw = task.get("model")
+    raw_model_str = sanitize_text(model_raw, strip_spaces=True)
+    is_1m_model = bool(re.search(r"1[mM]\b", raw_model_str))
+
+    model_name = re.sub(
+        r"\s*\(([0-9]+\.?[0-9]*[kKmM])\s+context\)", r" \1", raw_model_str, count=1
+    ).strip()
+    if not model_name:
+        model_name = "Claude"
+    cell_model = text(model_name, BLUE)
+
+    # Effort
+    effort_raw = nested(task, "effort", "level", default=None)
+    if effort_raw is None:
+        effort_raw = task.get("effort")
+    effort_str = sanitize_text(effort_raw, strip_spaces=True)
+    if not effort_str:
+        effort_str = sanitize_text(
+            os.environ.get("CLAUDE_CODE_EFFORT_LEVEL", ""), strip_spaces=True
+        )
+    if effort_str:
+        effort_level = effort_str.lower()
+        effort_label = "med" if effort_level == "medium" else effort_level
+        effort_style = {
+            "low": DIM,
+            "medium": ORANGE,
+            "high": GREEN,
+            "xhigh": PURPLE,
+            "max": RED,
+        }.get(effort_level, GREEN)
+        cell_effort = text(effort_label, effort_style)
+    else:
+        cell_effort = text("-", DIM)
+
+    if (
+        nested(task, "thinking", "enabled", default=False) is True
+        or task.get("thinking") is True
+    ):
+        cell_effort = combine(text("✦", PURPLE), " ", cell_effort)
+
+    # Agent Name
+    name_val = task.get("name") or task.get("label") or task.get("type") or "agent"
+    if isinstance(name_val, dict):
+        name_val = nested(name_val, "name", default="agent")
+    name_str = sanitize_text(name_val, strip_spaces=True) or "agent"
+    cell_name = text(name_str, WHITE)
+
+    # Tokens / Context Usage with 1M context regression protection
+    token_count = integer(task.get("tokenCount") or task.get("tokens") or 0)
+    context_size = integer(
+        task.get("contextWindowSize") or task.get("context_window_size") or 0
+    )
+
+    if is_1m_model and (context_size <= 200000 or token_count > context_size):
+        context_size = 1_000_000
+
+    cell_tokens = Text()
+    if token_count > 0 or context_size > 0:
+        t_str = format_tokens(token_count) if token_count > 0 else "0"
+        if context_size > 0 and token_count > context_size:
+            prefix = f"{t_str}/?"
+            cell_tokens = combine(text(prefix, ORANGE), text(" ?%", RED))
+        else:
+            c_str = format_tokens(context_size) if context_size > 0 else ""
+            prefix = f"{t_str}/{c_str}" if c_str else t_str
+            pct_val = (token_count * 100 // context_size) if context_size > 0 else None
+            pct_str = f" {pct_val}%" if pct_val is not None else ""
+            cell_tokens = combine(text(prefix, ORANGE), text(pct_str, GREEN))
+
+    # CWD & Git branch
+    cwd_raw = nested(task, "workspace", "current_dir", default=None, strip_spaces=False)
+    if cwd_raw is None:
+        cwd_raw = task.get("cwd")
+    cwd_string = sanitize_text(cwd_raw, strip_spaces=False)
+
+    if cwd_string:
+        display_dir = cwd_string.rsplit("/", 1)[-1]
+        worktree = str(nested(task, "worktree", "name", default="") or "")
+        if not worktree and isinstance(task.get("worktree"), str):
+            worktree = sanitize_text(task.get("worktree"), strip_spaces=True)
+        branch = git_branches.get(cwd_string, "")
+        cell_repo = text(display_dir, GREEN)
+        if branch:
+            cell_repo = combine(cell_repo, text("@", DIM), text(branch, BLUE))
+        if worktree:
+            cell_repo = combine(cell_repo, text(":", DIM), text(worktree, CYAN))
+        cell_cwd = text(collapse_home(cwd_string, home), CYAN)
+    else:
+        cell_repo = text("-", DIM)
+        cell_cwd = text("-", DIM)
+
+    row_one = [cell_model, cell_effort, cell_name]
+    if cell_tokens:
+        row_one.append(cell_tokens)
+    row_two = [cell_repo, cell_cwd]
+
+    lines = build_grid_lines(row_one, row_two)
+
+    # Check terminal width bounds and adaptively truncate if needed
+    if max_columns > 0 and (
+        visible_len(lines[0]) > max_columns or visible_len(lines[1]) > max_columns
+    ):
+        # Tier 1: If tokens cell pushes row 1 over width, drop tokens cell
+        if cell_tokens and visible_len(lines[0]) > max_columns:
+            row_one = [cell_model, cell_effort, cell_name]
+            lines = build_grid_lines(row_one, row_two)
+
+        # Tier 2: Truncate path/name if still over width
+        if visible_len(lines[1]) > max_columns and visible_len(cell_cwd) > 15:
+            target_w = max(
+                10, max_columns - visible_len(lines[1]) + visible_len(cell_cwd)
+            )
+            row_two[1] = truncate_text(cell_cwd, target_w)
+            lines = build_grid_lines(row_one, row_two)
+
+        if visible_len(lines[0]) > max_columns and visible_len(cell_name) > 10:
+            target_w = max(
+                8, max_columns - visible_len(lines[0]) + visible_len(cell_name)
+            )
+            row_one[2] = truncate_text(cell_name, target_w)
+            lines = build_grid_lines(row_one, row_two)
+
+        # Tier 3: Hard truncate lines to max_columns if necessary
+        lines[0] = truncate_text(lines[0], max_columns)
+        lines[1] = truncate_text(lines[1], max_columns)
+
+    return combine(lines[0], "\n", lines[1]).render()
+
+
+def main() -> int:
+    """Read stdin and emit JSON output line(s) for subagent tasks."""
+    input_text = (
+        sys.stdin.buffer.read().decode("utf-8", errors="surrogateescape").rstrip("\n")
+    )
+    if not input_text:
+        return 0
+
+    try:
+        parsed = json.loads(input_text)
+    except json.JSONDecodeError:
+        return 0
+
+    max_columns = 0
+    raw_tasks: list[Any] = []
+    if isinstance(parsed, dict):
+        max_columns = integer(parsed.get("columns") or os.environ.get("COLUMNS") or 0)
+        t_val = parsed.get("tasks")
+        if isinstance(t_val, list):
+            raw_tasks = t_val
+        elif "id" in parsed or "model" in parsed or "cwd" in parsed:
+            raw_tasks = [parsed]
+    elif isinstance(parsed, list):
+        raw_tasks = parsed
+
+    valid_tasks: list[dict[str, Any]] = []
+    cwds_to_discover: set[str] = set()
+    for task in raw_tasks:
+        if not isinstance(task, dict) or contains_surrogate(task):
+            continue
+        task_id = sanitize_text(task.get("id"), strip_spaces=False)
+        if not task_id:
+            continue
+        valid_tasks.append(task)
+        cwd_val = nested(
+            task, "workspace", "current_dir", default=None, strip_spaces=False
+        )
+        if cwd_val is None:
+            cwd_val = task.get("cwd")
+        if cwd_val:
+            cwds_to_discover.add(sanitize_text(cwd_val, strip_spaces=False))
+
+    git_branches = discover_git_branches(cwds_to_discover)
+
+    for task in valid_tasks:
+        task_id = sanitize_text(task.get("id"), strip_spaces=False)
+        content = render_task(task, max_columns, git_branches)
+        out_json = json.dumps(
+            {"id": task_id, "content": content}, separators=(",", ":")
+        )
+        sys.stdout.buffer.write(
+            (out_json + "\n").encode("utf-8", errors="surrogateescape")
+        )
+
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -1,0 +1,33 @@
+{
+	// markdownlint-cli2 runner config for THIS repo (local CLI + the VS Code
+	// markdownlint extension). It is NOT part of the published standard — the
+	// shipped artifact consumers seed from is `.markdownlint.json` (the rule set),
+	// which markdownlint-cli2 auto-merges. This file only controls *which* files a
+	// bare `npx markdownlint-cli2` lints and that it honors `.gitignore`, so a local
+	// run matches CI (which lints a clean checkout with no `.venv/`, caches, etc.).
+	// CI (`.github/workflows/lint-markdown.yml`) passes `globs` to the action
+	// explicitly because the action's own default is the non-recursive
+	// `*.{md,markdown}`.
+	"globs": ["**/*.md"],
+	// `ignores` excludes provider-composed agent instructions, machine-generated
+	// Markdown, and agent-authored session state rather than authored prose held to
+	// the body-style standard. The same boundary appears in the selected Frontmatter
+	// package config. These paths are regenerated artifacts (managed instruction
+	// blocks, review transcripts, and Agent Handoff session state), so body-linting
+	// them is churn, not quality, and would keep CI red on content no human wrote to a
+	// style bar. The spec fixtures are deliberately mutated/generated Markdown used
+	// to exercise parser failures, not authored docs. Legacy compatibility fixtures
+	// likewise preserve arbitrary consumer bytes.
+	// Authored design docs under docs/superpowers/{specs,plans} are deliberately NOT
+	// ignored — they stay gated.
+	"ignores": [
+		".claude/worktrees/**",
+		"AGENTS.md",
+		"CLAUDE.md",
+		"docs/handoff/**",
+		"tests/fixtures/specs/**",
+		"tests/fixtures/package_compatibility/legacy/**",
+		"tests/fixtures/observed_consumers/**"
+	],
+	"gitignore": true
+}

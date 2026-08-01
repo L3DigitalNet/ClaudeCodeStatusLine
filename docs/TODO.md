@@ -1,6 +1,6 @@
 # TODO
 
-- [ ] Create `subagentStatusLine`
+- [ ] Create `subagentStatusLine` (Python implementation complete in `statuslinepy-sub`; Bash and PowerShell mirrors pending)
 
   > ```text
   > model | reasoning effort | agent name

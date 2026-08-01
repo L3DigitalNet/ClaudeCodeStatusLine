@@ -74,7 +74,9 @@ class Text:
                 continue
             style = Style.parse(style_name)
             if content:
-                rendered.append(style.render(content, color_system=ColorSystem.TRUECOLOR))
+                rendered.append(
+                    style.render(content, color_system=ColorSystem.TRUECOLOR)
+                )
             else:
                 # Bash style variables contain real prefix/reset bytes even when the
                 # styled value is empty; keeping them also keeps the trailing cell alive.
@@ -131,7 +133,8 @@ def contains_surrogate(value: object) -> bool:
         return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
     if isinstance(value, dict):
         return any(
-            contains_surrogate(key) or contains_surrogate(item) for key, item in value.items()
+            contains_surrogate(key) or contains_surrogate(item)
+            for key, item in value.items()
         )
     if isinstance(value, list):
         return any(contains_surrogate(item) for item in value)
@@ -161,10 +164,14 @@ def format_tokens(value: object) -> str:
     """
     amount = number(value)
     if amount >= 1_000_000:
-        millions = (amount / Decimal(1_000_000)).quantize(Decimal("0.1"), rounding=ROUND_HALF_UP)
+        millions = (amount / Decimal(1_000_000)).quantize(
+            Decimal("0.1"), rounding=ROUND_HALF_UP
+        )
         rendered = f"{millions.normalize():f}M"
     elif amount >= 1_000:
-        thousands = (amount / Decimal(1_000)).quantize(Decimal("1"), rounding=ROUND_HALF_UP)
+        thousands = (amount / Decimal(1_000)).quantize(
+            Decimal("1"), rounding=ROUND_HALF_UP
+        )
         if thousands >= 1_000:
             rendered = humanize.metric(1_000_000, precision=0)
         else:
@@ -223,7 +230,9 @@ def run_command(
         )
     except (OSError, UnicodeError, ValueError):
         return ""
-    output = completed.stdout if completed.returncode == 0 or keep_stdout_on_error else ""
+    output = (
+        completed.stdout if completed.returncode == 0 or keep_stdout_on_error else ""
+    )
     return output.replace("\0", "")
 
 
@@ -237,7 +246,9 @@ def read_json(path: Path) -> dict[str, Any] | None:
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
     try:
-        path.write_text(json.dumps(value, separators=(",", ":")), encoding="utf-8", errors="strict")
+        path.write_text(
+            json.dumps(value, separators=(",", ":")), encoding="utf-8", errors="strict"
+        )
     except OSError:
         pass
 
@@ -268,7 +279,9 @@ def load_cli_version(data: dict[str, Any], cache_dir: Path) -> str:
     if version:
         try:
             cache_dir.mkdir(parents=True, exist_ok=True)
-            cache.write_bytes((version + "\n").encode("utf-8", errors="surrogateescape"))
+            cache.write_bytes(
+                (version + "\n").encode("utf-8", errors="surrogateescape")
+            )
         except OSError:
             pass
     return version
@@ -349,7 +362,11 @@ def curl_usage(token: str, client_version: str) -> dict[str, Any] | None:
 
 
 def usage_sources(
-    data: dict[str, Any], config_dir_string: str, config_dir: Path, cache_dir: Path, cli_version: str
+    data: dict[str, Any],
+    config_dir_string: str,
+    config_dir: Path,
+    cache_dir: Path,
+    cli_version: str,
 ) -> tuple[bool, object, object, object, object, dict[str, Any] | None, Path]:
     five_pct = nested(data, "rate_limits", "five_hour", "used_percentage")
     five_reset = nested(data, "rate_limits", "five_hour", "resets_at")
@@ -372,7 +389,13 @@ def usage_sources(
     if use_builtin:
         effective_builtin = integer(five_pct) != 0 or integer(seven_pct) != 0
         if not effective_builtin:
-            effective_builtin = five_reset not in (None, "", 0, "0", "null") or seven_reset not in (
+            effective_builtin = five_reset not in (
+                None,
+                "",
+                0,
+                "0",
+                "null",
+            ) or seven_reset not in (
                 None,
                 "",
                 0,
@@ -389,12 +412,22 @@ def usage_sources(
         explicit_config = os.environ.get("CLAUDE_CONFIG_DIR", "")
         token = oauth_token(config_dir, explicit_config)
         if token and token != "null":
-            client_version = str(nested(data, "version", default="") or cli_version or "2.1.197")
+            client_version = str(
+                nested(data, "version", default="") or cli_version or "2.1.197"
+            )
             fetched = curl_usage(token, client_version)
             if fetched is not None:
                 usage_data = fetched
                 write_json(cache_file, fetched)
-    return effective_builtin, five_pct, five_reset, seven_pct, seven_reset, usage_data, cache_file
+    return (
+        effective_builtin,
+        five_pct,
+        five_reset,
+        seven_pct,
+        seven_reset,
+        usage_data,
+        cache_file,
+    )
 
 
 def local_time(epoch: object, *, weekly: bool = False) -> tuple[str, str]:
@@ -417,7 +450,10 @@ def parse_iso(value: object) -> datetime | None:
 
 
 def extra_fragment(usage_data: dict[str, Any] | None) -> Text:
-    if not usage_data or nested(usage_data, "extra_usage", "is_enabled", default=False) is not True:
+    if (
+        not usage_data
+        or nested(usage_data, "extra_usage", "is_enabled", default=False) is not True
+    ):
         return Text()
     raw_used = nested(usage_data, "extra_usage", "used_credits")
     raw_limit = nested(usage_data, "extra_usage", "monthly_limit")
@@ -470,7 +506,9 @@ def rewrite_builtin_cache(
         if epoch in (None, "", 0, "0", "null"):
             return None
         try:
-            return datetime.fromtimestamp(float(str(epoch)), timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            return datetime.fromtimestamp(float(str(epoch)), timezone.utc).strftime(
+                "%Y-%m-%dT%H:%M:%SZ"
+            )
         except (ValueError, OverflowError, OSError):
             return None
 
@@ -510,7 +548,11 @@ def usage_cells(
         rewrite_builtin_cache(
             cache_file, usage_data, five_pct, five_reset, seven_pct, seven_reset
         )
-    elif usage_data and usage_data.get("five_hour") is not None and usage_data.get("five_hour") is not False:
+    elif (
+        usage_data
+        and usage_data.get("five_hour") is not None
+        and usage_data.get("five_hour") is not False
+    ):
         five = usage_data["five_hour"]
         seven = usage_data.get("seven_day")
         if isinstance(five, dict):
@@ -564,8 +606,12 @@ def version_gt(candidate: str, current: str) -> bool:
     candidate_parts = (
         candidate.removeprefix("v").split(".", maxsplit=2) + ["", "", ""]
     )[:3]
-    current_parts = (current.removeprefix("v").split(".", maxsplit=2) + ["", "", ""])[:3]
-    for candidate_part, current_part in zip(candidate_parts, current_parts, strict=True):
+    current_parts = (current.removeprefix("v").split(".", maxsplit=2) + ["", "", ""])[
+        :3
+    ]
+    for candidate_part, current_part in zip(
+        candidate_parts, current_parts, strict=True
+    ):
         try:
             candidate_number = int(candidate_part or 0)
             current_number = int(current_part or 0)
@@ -613,7 +659,11 @@ def update_notice(cache_dir: Path) -> Text:
         except json.JSONDecodeError:
             fetched = None
         tag_value = fetched.get("tag_name") if isinstance(fetched, dict) else None
-        if isinstance(fetched, dict) and tag_value is not None and tag_value is not False:
+        if (
+            isinstance(fetched, dict)
+            and tag_value is not None
+            and tag_value is not False
+        ):
             data = fetched
             write_json(cache, fetched)
         elif not cache.exists() or cache.stat().st_size == 0:
@@ -647,18 +697,27 @@ def render(data: dict[str, Any], *, jq_error: bool = False) -> Text:
         r"\s*\(([0-9]+\.?[0-9]*[kKmM])\s+context\)", r" \1", model_name, count=1
     ).strip()
     default_size = 0 if jq_error else 200000
-    size = integer(nested(data, "context_window", "context_window_size", default=default_size), default_size)
+    size = integer(
+        nested(data, "context_window", "context_window_size", default=default_size),
+        default_size,
+    )
     if size == 0 and not jq_error:
         size = 200000
     current = sum(
         integer(nested(data, "context_window", "current_usage", key, default=0))
-        for key in ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens")
+        for key in (
+            "input_tokens",
+            "cache_creation_input_tokens",
+            "cache_read_input_tokens",
+        )
     )
     supplied_percent = nested(data, "context_window", "used_percentage")
     percent_used = (
         integer(supplied_percent)
         if supplied_percent is not None
-        else current * 100 // size if size > 0 else 0
+        else current * 100 // size
+        if size > 0
+        else 0
     )
 
     effort = nested(data, "effort", "level", default="")
@@ -689,9 +748,15 @@ def render(data: dict[str, Any], *, jq_error: bool = False) -> Text:
     tokens_percent = text(f"{percent_used}%", GREEN)
     tokens_cell = combine(tokens_prefix, " ", tokens_percent)
 
-    effective_builtin, five_pct, five_reset, seven_pct, seven_reset, usage_data, cache_file = (
-        usage_sources(data, config_dir_string, config_dir, cache_dir, cli_version)
-    )
+    (
+        effective_builtin,
+        five_pct,
+        five_reset,
+        seven_pct,
+        seven_reset,
+        usage_data,
+        cache_file,
+    ) = usage_sources(data, config_dir_string, config_dir, cache_dir, cli_version)
     five_cell, seven_cell = usage_cells(
         effective_builtin,
         five_pct,
@@ -704,17 +769,24 @@ def render(data: dict[str, Any], *, jq_error: bool = False) -> Text:
 
     dollars = extra_fragment(usage_data)
     if dollars:
-        target = max(visible_len(model_cell), visible_len(version_cell) + 2 + visible_len(dollars))
+        target = max(
+            visible_len(model_cell),
+            visible_len(version_cell) + 2 + visible_len(dollars),
+        )
         gap = target - visible_len(version_cell) - visible_len(dollars)
         version_cell = combine(version_cell, " " * gap, dollars)
 
     model_width = max(visible_len(version_cell), visible_len(model_cell))
-    model_gap = max(1, model_width - visible_len(model_prefix) - visible_len(effort_part))
+    model_gap = max(
+        1, model_width - visible_len(model_prefix) - visible_len(effort_part)
+    )
     model_cell = combine(model_prefix, " " * model_gap, effort_part)
 
     fable = fable_cell(usage_data, visible_len(tokens_cell))
     token_width = max(visible_len(fable), visible_len(tokens_cell))
-    token_gap = max(1, token_width - visible_len(tokens_prefix) - visible_len(tokens_percent))
+    token_gap = max(
+        1, token_width - visible_len(tokens_prefix) - visible_len(tokens_percent)
+    )
     tokens_cell = combine(tokens_prefix, " " * token_gap, tokens_percent)
 
     if data.get("workspace") is False:
@@ -789,7 +861,9 @@ def render(data: dict[str, Any], *, jq_error: bool = False) -> Text:
 
 def main() -> int:
     """Read the complete stdin event and print without a trailing newline."""
-    input_text = sys.stdin.buffer.read().decode("utf-8", errors="surrogateescape").rstrip("\n")
+    input_text = (
+        sys.stdin.buffer.read().decode("utf-8", errors="surrogateescape").rstrip("\n")
+    )
     if not input_text:
         sys.stdout.buffer.write(b"Claude")
         return 0
@@ -800,7 +874,9 @@ def main() -> int:
         jq_error = True
     else:
         has_surrogate = contains_surrogate(parsed)
-        jq_error = has_surrogate or (parsed is not None and not isinstance(parsed, dict))
+        jq_error = has_surrogate or (
+            parsed is not None and not isinstance(parsed, dict)
+        )
         if has_surrogate:
             parsed = None
     data = parsed if isinstance(parsed, dict) else {}

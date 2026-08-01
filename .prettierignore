@@ -1,0 +1,62 @@
+# Prettier ignore — mirrors the `ignores` in .markdownlint-cli2.jsonc.
+#
+# These paths are generated artifacts, Agent Handoff state, or formatter-external
+# contracts. Formatting them is churn or would conflict with their owning tool.
+#
+# Authored design docs under docs/superpowers/{specs,plans} are deliberately NOT
+# ignored — they stay gated, same as markdownlint. Prettier already honors
+# .gitignore, so .venv/ and caches need no entry here.
+docs/handoff/
+tests/fixtures/specs/
+tests/fixtures/package_compatibility/legacy/
+
+# Agent Handoff owns exact managed blocks in the instruction files; its shape
+# policy owns the status/task documents and preserves user-authored task wrapping.
+AGENTS.md
+CLAUDE.md
+.agents/agent-handoff/
+docs/STATUS.md
+docs/TODO.md
+
+# The control-plane migration guard owns the exact shared-container bytes.
+.vscode/tasks.json
+
+# Agent worktrees are full checkouts of this repo living inside it. They are not
+# gitignored (git tracks them as separate working trees), so a local `prettier .`
+# would otherwise sweep every agent's copy of the corpus. CI checks out clean and
+# is unaffected.
+.claude/worktrees/
+
+# Machine-generated JSON Schema: its canonical byte format is owned by the
+# standard_manifest.standard_schema_json() writer and enforced by a byte-drift
+# test (json.dumps indent=2, key order preserved). Prettier's JSON style (inline
+# short arrays) diverges from that, so letting Prettier own it would create a
+# two-master conflict with the drift test. Hand-authored schemas stay gated.
+src/project_standards/schemas/standard.schema.json
+src/project_standards/schemas/standard-family.schema.json
+src/project_standards/schemas/standard-payload.schema.json
+src/project_standards/schemas/standards-catalog-source.schema.json
+src/project_standards/schemas/consumer-catalog.schema.json
+src/project_standards/schemas/consumer-config.schema.json
+src/project_standards/schemas/consumer-lock.schema.json
+src/project_standards/schemas/mutation-plan.schema.json
+src/project_standards/schemas/provider-input.schema.json
+src/project_standards/schemas/reconciliation-plan.schema.json
+src/project_standards/schemas/migration-report.schema.json
+standards/*/versions/*/schemas/mutation-plan.schema.json
+
+# Package-contract fixtures are integrity inputs: their exact raw bytes and
+# declared digests are one test contract, not formatter-owned source documents.
+tests/fixtures/package_contract/
+
+# Observed-consumer fixtures are recovered byte-exact configs pinned by digest;
+# the sibling provenance note travels with them and is not formatter-owned.
+tests/fixtures/observed_consumers/
+
+# Control-plane parser fixtures intentionally preserve consumer formatting,
+# malformed syntax, duplicate keys, and other bytes that Prettier must not own.
+tests/control_plane/fixtures/
+
+# Manifest-generated catalog: the Python renderer and its checked-in freshness
+# test own the exact bytes, so formatting it would create a second generator.
+standards/catalog.md
