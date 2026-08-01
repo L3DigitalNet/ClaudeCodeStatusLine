@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+#!/usr/bin/env python3
 """Render the Claude Code status line with the observable contract of statusline.sh.
 
 Rich owns terminal styling while Humanize supplies the SI token prefixes. External
@@ -127,31 +127,53 @@ def nested(data: object, *keys: str, default: object = None) -> object:
     return current
 
 
-def contains_surrogate(value: object) -> bool:
+def contains_surrogate(value: object, max_depth: int = 32) -> bool:
     """Detect lone JSON surrogates that jq rejects but json.loads accepts."""
-    if isinstance(value, str):
-        return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
-    if isinstance(value, dict):
-        return any(
-            contains_surrogate(key) or contains_surrogate(item)
-            for key, item in value.items()
-        )
-    if isinstance(value, list):
-        return any(contains_surrogate(item) for item in value)
-    return False
+    try:
+        stack: list[tuple[object, int]] = [(value, 0)]
+        while stack:
+            curr, depth = stack.pop()
+            if depth > max_depth:
+                return True
+            if isinstance(curr, str):
+                if any(0xD800 <= ord(character) <= 0xDFFF for character in curr):
+                    return True
+            elif isinstance(curr, dict):
+                next_depth = depth + 1
+                for key, item in curr.items():
+                    if isinstance(key, str) and any(
+                        0xD800 <= ord(character) <= 0xDFFF for character in key
+                    ):
+                        return True
+                    stack.append((item, next_depth))
+            elif isinstance(curr, list):
+                next_depth = depth + 1
+                for item in curr:
+                    stack.append((item, next_depth))
+        return False
+    except Exception:
+        return True
 
 
 def number(value: object, default: Decimal = Decimal(0)) -> Decimal:
     try:
-        return Decimal(str(value))
-    except (InvalidOperation, ValueError):
+        num = Decimal(str(value))
+        if num.is_nan() or num.is_infinite():
+            return default
+        return num
+    except (InvalidOperation, ValueError, TypeError):
         return default
 
 
 def integer(value: object, default: int = 0) -> int:
     try:
-        return int(number(value))
-    except (OverflowError, ValueError):
+        val = int(number(value, default=Decimal(default)))
+        if val < 0:
+            return max(0, default)
+        if val > 999_999_999_999_999:
+            return 999_999_999_999_999
+        return val
+    except (OverflowError, ValueError, InvalidOperation):
         return default
 
 
@@ -163,21 +185,29 @@ def format_tokens(value: object) -> str:
     never promotes large counts to Humanize's G/T units.
     """
     amount = number(value)
-    if amount >= 1_000_000:
-        millions = (amount / Decimal(1_000_000)).quantize(
-            Decimal("0.1"), rounding=ROUND_HALF_UP
-        )
-        rendered = f"{millions.normalize():f}M"
-    elif amount >= 1_000:
-        thousands = (amount / Decimal(1_000)).quantize(
-            Decimal("1"), rounding=ROUND_HALF_UP
-        )
-        if thousands >= 1_000:
-            rendered = humanize.metric(1_000_000, precision=0)
+    if amount < 0:
+        amount = Decimal(0)
+    max_amount = Decimal("999999999999999")
+    if amount > max_amount:
+        amount = max_amount
+    try:
+        if amount >= 1_000_000:
+            millions = (amount / Decimal(1_000_000)).quantize(
+                Decimal("0.1"), rounding=ROUND_HALF_UP
+            )
+            rendered = f"{millions.normalize():f}M"
+        elif amount >= 1_000:
+            thousands = (amount / Decimal(1_000)).quantize(
+                Decimal("1"), rounding=ROUND_HALF_UP
+            )
+            if thousands >= 1_000:
+                rendered = humanize.metric(1_000_000, precision=0)
+            else:
+                rendered = humanize.metric(int(thousands * 1_000), precision=0)
         else:
-            rendered = humanize.metric(int(thousands * 1_000), precision=0)
-    else:
-        rendered = str(integer(amount))
+            rendered = str(integer(amount))
+    except (InvalidOperation, ValueError, OverflowError):
+        rendered = "0"
     compact = rendered.replace(" ", "")
     return re.sub(r"\.0([kM])$", r"\1", compact)
 

@@ -95,3 +95,25 @@ setup() {
     [ "$status" -eq 0 ]
     [ "$output" = "" ]
 }
+
+@test "statuslinepy-sub handles oversized 102-digit tokenCount without crashing" {
+    huge_tokens="1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
+    json="{\"tasks\":[{\"id\":\"t-huge\",\"name\":\"Agent\",\"model\":\"Claude\",\"tokenCount\":$huge_tokens,\"cwd\":\"\"}]}"
+    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    [ "$status" -eq 0 ]
+    assert_contains "$output" '"id":"t-huge"'
+}
+
+@test "statuslinepy-sub handles deeply nested task payloads without crashing" {
+    nested_json="$(python3 -c '
+nested = {"id": "t-deep", "name": "Agent", "model": "Claude"}
+curr = nested
+for _ in range(900):
+    curr["extra"] = {}
+    curr = curr["extra"]
+import json
+print(json.dumps({"tasks": [nested]}))
+')"
+    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$nested_json"
+    [ "$status" -eq 0 ]
+}

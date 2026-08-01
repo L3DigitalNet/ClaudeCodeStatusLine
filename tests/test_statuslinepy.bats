@@ -651,3 +651,7 @@ EOF
 @test "intermediate workspace false suppresses cwd fallback like jq" {
     compare_pair '{"workspace":false,"cwd":"/fallback","version":"1.0.0"}' raw
 }
+
+@test "statuslinepy uses the PATH-selected Python interpreter" {
+    [ "$(head -n1 "$STATUSLINEPY")" = "#!/usr/bin/env python3" ]
+}

@@ -17,6 +17,7 @@ Thumbs.db
 *.swp
 *~
 .ruff_cache/
+__pycache__/
 
 # Formatting/Linting
 .editorconfig
