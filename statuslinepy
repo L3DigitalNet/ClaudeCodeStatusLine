@@ -111,10 +111,31 @@ def padded(value: Text, width: int) -> Text:
 def nested(data: object, *keys: str, default: object = None) -> object:
     current = data
     for key in keys:
-        if not isinstance(current, dict) or key not in current or current[key] is None:
+        if (
+            not isinstance(current, dict)
+            or key not in current
+            or current[key] is None
+            or current[key] is False
+        ):
             return default
         current = current[key]
+    if isinstance(current, str):
+        # Bash command substitution discards NUL bytes from every jq result.
+        return current.replace("\0", "")
     return current
+
+
+def contains_surrogate(value: object) -> bool:
+    """Detect lone JSON surrogates that jq rejects but json.loads accepts."""
+    if isinstance(value, str):
+        return any(0xD800 <= ord(character) <= 0xDFFF for character in value)
+    if isinstance(value, dict):
+        return any(
+            contains_surrogate(key) or contains_surrogate(item) for key, item in value.items()
+        )
+    if isinstance(value, list):
+        return any(contains_surrogate(item) for item in value)
+    return False
 
 
 def number(value: object, default: Decimal = Decimal(0)) -> Decimal:
@@ -200,14 +221,15 @@ def run_command(
             check=False,
             shell=False,
         )
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError, ValueError):
         return ""
-    return completed.stdout if completed.returncode == 0 or keep_stdout_on_error else ""
+    output = completed.stdout if completed.returncode == 0 or keep_stdout_on_error else ""
+    return output.replace("\0", "")
 
 
 def read_json(path: Path) -> dict[str, Any] | None:
     try:
-        value = json.loads(path.read_text())
+        value = json.loads(path.read_text(encoding="utf-8", errors="strict"))
     except (OSError, UnicodeError, json.JSONDecodeError):
         return None
     return value if isinstance(value, dict) else None
@@ -215,7 +237,7 @@ def read_json(path: Path) -> dict[str, Any] | None:
 
 def write_json(path: Path, value: dict[str, Any]) -> None:
     try:
-        path.write_text(json.dumps(value, separators=(",", ":")))
+        path.write_text(json.dumps(value, separators=(",", ":")), encoding="utf-8", errors="strict")
     except OSError:
         pass
 
@@ -259,13 +281,15 @@ def oauth_token(config_dir: Path, explicit_config: str) -> str:
 
     service = "Claude Code-credentials"
     if explicit_config:
-        suffix = hashlib.sha256(explicit_config.encode()).hexdigest()[:8]
+        suffix = hashlib.sha256(
+            explicit_config.encode("utf-8", errors="surrogateescape")
+        ).hexdigest()[:8]
         service += f"-{suffix}"
     blob = run_command(["security", "find-generic-password", "-s", service, "-w"])
     if blob:
         try:
             token = nested(json.loads(blob), "claudeAiOauth", "accessToken", default="")
-            if token:
+            if token and str(token) != "null":
                 return str(token)
         except json.JSONDecodeError:
             pass
@@ -273,7 +297,7 @@ def oauth_token(config_dir: Path, explicit_config: str) -> str:
     credentials = read_json(config_dir / ".credentials.json")
     if credentials:
         token = nested(credentials, "claudeAiOauth", "accessToken", default="")
-        if token:
+        if token and str(token) != "null":
             return str(token)
 
     blob = run_command(
@@ -282,7 +306,7 @@ def oauth_token(config_dir: Path, explicit_config: str) -> str:
     if blob:
         try:
             token = nested(json.loads(blob), "claudeAiOauth", "accessToken", default="")
-            if token:
+            if token and str(token) != "null":
                 return str(token)
         except json.JSONDecodeError:
             pass
@@ -333,7 +357,9 @@ def usage_sources(
     seven_reset = nested(data, "rate_limits", "seven_day", "resets_at")
     use_builtin = five_pct is not None or seven_pct is not None
 
-    config_hash = hashlib.sha256(config_dir_string.encode()).hexdigest()[:8]
+    config_hash = hashlib.sha256(
+        config_dir_string.encode("utf-8", errors="surrogateescape")
+    ).hexdigest()[:8]
     cache_file = cache_dir / f"statusline-usage-cache-{config_hash}.json"
     fetch_stamp = cache_dir / f"statusline-usage-fetched-{config_hash}"
     try:
@@ -385,13 +411,9 @@ def parse_iso(value: object) -> datetime | None:
     raw = str(value)
     try:
         parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-    except ValueError:
+        return parsed.astimezone()
+    except (ValueError, OverflowError, OSError):
         return None
-    if parsed.tzinfo is None:
-        parsed = parsed.astimezone()
-    else:
-        parsed = parsed.astimezone()
-    return parsed
 
 
 def extra_fragment(usage_data: dict[str, Any] | None) -> Text:
@@ -505,10 +527,15 @@ def usage_cells(
             moment = parse_iso(nested(seven, "resets_at"))
             if moment:
                 sd_prefix, sd_time = WEEKDAYS[moment.weekday()], f"@{moment:%H:%M}"
+            sd_text, sd_style = f"{percent}%", usage_style(percent)
+        elif seven is not None:
+            # jq member access on a non-null scalar errors before `// 0`; the
+            # surrounding shell pipeline consequently builds a bare green `%`.
+            sd_text, sd_style, moment = "%", GREEN, None
         else:
             percent = 0
             moment = None
-        sd_text, sd_style = f"{percent}%", usage_style(percent)
+            sd_text, sd_style = f"{percent}%", usage_style(percent)
 
     percent_width = max(len(fh_text), len(sd_text))
     prefix_width = len(sd_prefix)
@@ -531,16 +558,31 @@ def usage_cells(
     return five_cell, seven_cell
 
 
-def version_tuple(value: str) -> tuple[int, int, int]:
-    pieces = value.removeprefix("v").split(".")[:3]
-    parsed: list[int] = []
-    for piece in pieces:
+def version_gt(candidate: str, current: str) -> bool:
+    """Compare three components with Bash `test` failure semantics."""
+    signed_limit = 1 << 63
+    candidate_parts = (
+        candidate.removeprefix("v").split(".", maxsplit=2) + ["", "", ""]
+    )[:3]
+    current_parts = (current.removeprefix("v").split(".", maxsplit=2) + ["", "", ""])[:3]
+    for candidate_part, current_part in zip(candidate_parts, current_parts, strict=True):
         try:
-            parsed.append(int(piece or 0))
+            candidate_number = int(candidate_part or 0)
+            current_number = int(current_part or 0)
         except ValueError:
-            parsed.append(0)
-    normalized = (parsed + [0, 0, 0])[:3]
-    return normalized[0], normalized[1], normalized[2]
+            # `[ bad -gt N ]` and `[ bad -lt N ]` both fail, after which
+            # statusline.sh continues with the next version component.
+            continue
+        if not (
+            -signed_limit <= candidate_number < signed_limit
+            and -signed_limit <= current_number < signed_limit
+        ):
+            continue
+        if candidate_number > current_number:
+            return True
+        if candidate_number < current_number:
+            return False
+    return False
 
 
 def update_notice(cache_dir: Path) -> Text:
@@ -582,7 +624,7 @@ def update_notice(cache_dir: Path) -> Text:
     if not data:
         return Text()
     tag = re.sub(r"[^v0-9.]", "", str(data.get("tag_name", "")))
-    if tag and version_tuple(tag) > version_tuple(VERSION):
+    if tag and version_gt(tag, VERSION):
         return combine(
             "\n",
             text(
@@ -599,8 +641,11 @@ def render(data: dict[str, Any], *, jq_error: bool = False) -> Text:
     config_dir = Path(config_dir_string)
     cache_dir = Path(cache_dir_string)
 
-    model_name = str(nested(data, "model", "display_name", default="" if jq_error else "Claude"))
-    model_name = re.sub(r"\s*\(([0-9]+\.?[0-9]*[kKmM])\s+context\)", r" \1", model_name).strip()
+    model_default = "" if jq_error or data.get("model") is False else "Claude"
+    model_name = str(nested(data, "model", "display_name", default=model_default))
+    model_name = re.sub(
+        r"\s*\(([0-9]+\.?[0-9]*[kKmM])\s+context\)", r" \1", model_name, count=1
+    ).strip()
     default_size = 0 if jq_error else 200000
     size = integer(nested(data, "context_window", "context_window_size", default=default_size), default_size)
     if size == 0 and not jq_error:
@@ -672,9 +717,12 @@ def render(data: dict[str, Any], *, jq_error: bool = False) -> Text:
     token_gap = max(1, token_width - visible_len(tokens_prefix) - visible_len(tokens_percent))
     tokens_cell = combine(tokens_prefix, " " * token_gap, tokens_percent)
 
-    cwd = nested(data, "workspace", "current_dir", default=None)
-    if cwd is None:
-        cwd = nested(data, "cwd", default="")
+    if data.get("workspace") is False:
+        cwd = ""
+    else:
+        cwd = nested(data, "workspace", "current_dir", default=None)
+        if cwd is None:
+            cwd = nested(data, "cwd", default="")
     cwd_string = str(cwd or "")
     cwd_cell = Text()
     path_cell = Text()
@@ -685,6 +733,7 @@ def render(data: dict[str, Any], *, jq_error: bool = False) -> Text:
         branch = run_command(
             ["git", "-C", cwd_string, "rev-parse", "--abbrev-ref", "HEAD"],
             keep_stdout_on_error=True,
+            preserve_opaque_bytes=True,
         ).strip()
         cwd_cell = text(display_dir, GREEN)
         if branch:
@@ -692,7 +741,11 @@ def render(data: dict[str, Any], *, jq_error: bool = False) -> Text:
             worktree = nested(data, "worktree", "name", default="")
             if worktree:
                 cwd_cell = combine(cwd_cell, text(":", DIM), text(str(worktree), CYAN))
-            diff = run_command(["git", "-C", cwd_string, "diff", "--numstat"])
+            diff = run_command(
+                ["git", "-C", cwd_string, "diff", "--numstat"],
+                keep_stdout_on_error=True,
+                preserve_opaque_bytes=True,
+            )
             added = removed = 0
             changed = False
             for line in diff.splitlines():
@@ -736,7 +789,7 @@ def render(data: dict[str, Any], *, jq_error: bool = False) -> Text:
 
 def main() -> int:
     """Read the complete stdin event and print without a trailing newline."""
-    input_text = sys.stdin.read()
+    input_text = sys.stdin.buffer.read().decode("utf-8", errors="surrogateescape").rstrip("\n")
     if not input_text:
         sys.stdout.buffer.write(b"Claude")
         return 0
@@ -746,7 +799,10 @@ def main() -> int:
         parsed = None
         jq_error = True
     else:
-        jq_error = parsed is not None and not isinstance(parsed, dict)
+        has_surrogate = contains_surrogate(parsed)
+        jq_error = has_surrogate or (parsed is not None and not isinstance(parsed, dict))
+        if has_surrogate:
+            parsed = None
     data = parsed if isinstance(parsed, dict) else {}
     serialized = render(data, jq_error=jq_error).render()
     sys.stdout.buffer.write(serialized.encode("utf-8", errors="surrogateescape"))

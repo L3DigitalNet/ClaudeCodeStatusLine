@@ -1,6 +1,6 @@
 # Claude Code Status Line
 
-A custom status line for [Claude Code](https://claude.com/claude-code) that displays the model, reasoning effort, token usage, rate limits, reset times, and the installed CLI version in two compact, aligned lines. It runs as an external shell command, so it does not slow down Claude Code or consume any extra tokens.
+A custom status line for [Claude Code](https://claude.com/claude-code) that displays the model, reasoning effort, token usage, rate limits, reset times, and the installed CLI version in two compact, aligned lines. It runs as an external command, so it does not slow down Claude Code or consume any extra tokens.
 
 > **Actively maintained.** This is an independent continuation of [daniel3303/ClaudeCodeStatusLine](https://github.com/daniel3303/ClaudeCodeStatusLine), maintained by [@chrisdpurcell](https://github.com/chrisdpurcell). See the [changelog](CHANGELOG.md) for what's new. **To get notified of updates:** click **Watch → Custom → Releases** at the top of the repo — or leave the built-in update check on, which flags a new release in the status line itself.
 
@@ -44,7 +44,10 @@ Ask Claude Code:
 
 > Clone <https://github.com/chrisdpurcell/ClaudeCodeStatusLine> to `~/.claude/statusline/` (or `%USERPROFILE%\.claude\statusline\` on Windows) and configure it as my status bar by following its INSTALL.md.
 
-Claude will clone the repo to that path, pick the right script for your OS, and update `settings.json`. Full step-by-step instructions Claude follows live in [INSTALL.md](INSTALL.md).
+Claude will clone the repo to that path, choose the Bash, PowerShell, or Python implementation,
+and update `settings.json`. The Python option uses the extensionless `statuslinepy` executable and
+requires `/usr/bin/python3` 3.10+ with its pinned Rich and Humanize dependencies. Full
+step-by-step instructions Claude follows live in [INSTALL.md](INSTALL.md).
 
 Restart Claude Code after Claude saves the configuration.
 
@@ -66,7 +69,8 @@ No `settings.json` changes are needed — the path stays valid across versions.
 
 - Claude Code with OAuth authentication (Pro/Max subscription for rate-limit and extra-usage data)
 - `git` in `PATH`
-- macOS / Linux: `jq` and `curl`
+- Bash implementation (macOS / Linux): `jq` and `curl`
+- Python alternative: `curl` and `/usr/bin/python3` 3.10+ with the packages pinned in [`requirements.txt`](requirements.txt); `jq` is not required
 - Windows: PowerShell 5.1+ (default on Windows 10/11)
 
 ## Caching

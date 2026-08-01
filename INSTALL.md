@@ -4,7 +4,7 @@ This document is the authoritative install guide. It is written to be executed s
 
 ## 1. Detect the operating system
 
-- **macOS, Linux, or WSL** → use `statusline.sh` (WSL is a real Linux userland with bash/jq/curl available by default)
+- **macOS, Linux, or WSL** → use `statusline.sh`, or `statuslinepy` when the Python runtime below is installed (WSL is a real Linux userland)
 - **Windows-native shells** (PowerShell, CMD, Git Bash) → use `statusline.ps1`
 
 ## 2. Clone the repo
@@ -15,7 +15,15 @@ Clone to `~/.claude/statusline/` on Unix, or `%USERPROFILE%\.claude\statusline\`
 
 ```bash
 git clone https://github.com/chrisdpurcell/ClaudeCodeStatusLine ~/.claude/statusline
-chmod +x ~/.claude/statusline/statusline.sh
+chmod +x ~/.claude/statusline/statusline.sh ~/.claude/statusline/statuslinepy
+```
+
+To use the Python implementation, install its pinned dependencies into the same
+`/usr/bin/python3` 3.10+ interpreter named by `statuslinepy`'s shebang, then verify both imports:
+
+```bash
+/usr/bin/python3 -m pip install --user -r ~/.claude/statusline/requirements.txt
+/usr/bin/python3 -c 'import humanize, rich'
 ```
 
 **Windows (PowerShell)**
@@ -32,6 +40,12 @@ Add (or update) the `statusLine` key in `~/.claude/settings.json` (Unix) or `%US
 
 ```json
 { "statusLine": { "type": "command", "command": "~/.claude/statusline/statusline.sh" } }
+```
+
+For the Python implementation, use its extensionless executable instead:
+
+```json
+{ "statusLine": { "type": "command", "command": "~/.claude/statusline/statuslinepy" } }
 ```
 
 **Windows**
@@ -82,8 +96,9 @@ No `settings.json` changes are needed — the command path is stable across vers
 ## Requirements
 
 - Claude Code (Pro/Max subscription for rate-limit and extra-usage display)
-- macOS / Linux: `jq` and `curl` (required)
+- Bash implementation (macOS / Linux): `jq` and `curl`
+- Python implementation: `curl`, `/usr/bin/python3` 3.10+, and the exact Rich and Humanize versions in `requirements.txt`; `jq` is not required
 - Windows: PowerShell 5.1+ (default on Windows 10/11)
 - `git` in `PATH` (optional — enables the `@branch` and `(+/-)` annotation next to the working directory; the status line still renders everything else without it)
 
-If `jq` is missing on macOS/Linux, install it with the system package manager (`brew install jq`, `apt install jq`, etc.).
+To use the Bash implementation, install `jq` with the system package manager (`brew install jq`, `apt install jq`, etc.).

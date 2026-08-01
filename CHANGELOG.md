@@ -5,8 +5,22 @@ All notable changes to this project are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-Both implementations — `statusline.sh` (Bash) and `statusline.ps1` (PowerShell) — are
-functional mirrors; every entry below applies to both unless noted.
+The three implementations — `statusline.sh` (Bash), `statusline.ps1` (PowerShell), and
+`statuslinepy` (Python) — are functional mirrors; every entry below applies to all three
+unless noted.
+
+## [Unreleased]
+
+### Added
+- **Python implementation:** added the executable, extensionless `statuslinepy` mirror using
+  Rich for terminal styles and Humanize for compact token units, with exact runtime pins in
+  `requirements.txt` and differential Bats coverage against the Bash reference.
+
+### Fixed
+- **Python parity and resilience:** matched Bash behavior for opaque cache, Git, path, and CLI
+  bytes; jq fallback and scalar edge cases; newline-only input; malformed JSON; credential
+  fallthrough; reset-time overflow; model normalization; and version comparison. JSON files now
+  use explicit UTF-8, while opaque command data round-trips with surrogate escapes.
 
 ## [1.8.2] - 2026-07-05
 

@@ -18,8 +18,17 @@ make_sandbox() {
     else
         printf '#!/bin/sh\nprintf "9.8.7 test\\n"\n' >"$root/bin/claude"
     fi
-    printf '#!/bin/sh\nexit 1\n' >"$root/bin/security"
-    printf '#!/bin/sh\nexit 1\n' >"$root/bin/secret-tool"
+    cat >"$root/bin/security" <<'EOF'
+#!/bin/sh
+printf '%s\n' "$*" >>"$SECURITY_LOG"
+[ -n "${SECURITY_BLOB+x}" ] || exit 1
+printf '%s\n' "$SECURITY_BLOB"
+EOF
+    cat >"$root/bin/secret-tool" <<'EOF'
+#!/bin/sh
+[ -n "${SECRET_BLOB+x}" ] || exit 1
+printf '%s\n' "$SECRET_BLOB"
+EOF
     cat >"$root/bin/curl" <<'EOF'
 #!/bin/sh
 cat >"$CURL_STDIN"
@@ -48,8 +57,14 @@ run_impl() {
         CURL_LOG="$root/curl.log" \
         CURL_STDIN="$root/curl.stdin" \
         CURL_RESPONSE="$root/curl.response" \
+        SECURITY_LOG="$root/security.log" \
+        ${RUN_SECURITY_BLOB+SECURITY_BLOB="$RUN_SECURITY_BLOB"} \
+        ${RUN_SECRET_BLOB+SECRET_BLOB="$RUN_SECRET_BLOB"} \
         PYTHONPATH="$RUNTIME_SITE" \
         TZ="${RUN_TZ:-}" \
+        LC_ALL="${RUN_LC_ALL:-}" \
+        PYTHONUTF8="${RUN_PYTHONUTF8:-}" \
+        PYTHONCOERCECLOCALE="${RUN_PYTHONCOERCECLOCALE:-}" \
         PATH="$root/bin:$PATH" \
         "${command[@]}" >"$output"
 }
@@ -393,4 +408,246 @@ seed_usage_cache() {
 @test "JSON-derived control bytes match Bash raw output" {
     json='{"model":{"display_name":"A\u0007B\rC\bD\tE\u001b[31mF\u001b]0;X\u0007G"},"version":"1.0.0"}'
     compare_pair "$json" raw
+}
+
+@test "extreme cached reset timestamps never abort the grid" {
+    RUN_TZ=Pacific/Kiritimati
+    usage='{"five_hour":{"utilization":25,"resets_at":"9999-12-31T23:59:59-14:00"},"seven_day":{"utilization":50,"resets_at":"9999-12-31T23:59:59-14:00"}}'
+    seed_usage_cache "$PAIR_ROOT/python" "$usage"
+
+    run_impl "$STATUSLINEPY" '{"version":"1.0.0"}' "$PAIR_ROOT/python" "$PAIR_ROOT/python.out"
+    [ "$?" -eq 0 ]
+    assert_contains "$(strip_ansi <"$PAIR_ROOT/python.out")" '5h 25%'
+}
+
+@test "UTF-8 settings decode independently of the C locale" {
+    RUN_LC_ALL=C
+    RUN_PYTHONUTF8=0
+    RUN_PYTHONCOERCECLOCALE=0
+    for side in bash python; do
+        root="$PAIR_ROOT/$side"
+        make_sandbox "$root"
+        printf '{"effortLevel":"hígh"}' >"$root/config/settings.json"
+    done
+
+    run_impl "$STATUSLINE_SH" '{"version":"1.0.0"}' "$PAIR_ROOT/bash" "$PAIR_ROOT/bash.out"
+    [ "$?" -eq 0 ]
+    run_impl "$STATUSLINEPY" '{"version":"1.0.0"}' "$PAIR_ROOT/python" "$PAIR_ROOT/python.out"
+    [ "$?" -eq 0 ]
+    assert_contains "$(strip_ansi <"$PAIR_ROOT/bash.out")" 'hígh'
+    assert_contains "$(strip_ansi <"$PAIR_ROOT/python.out")" 'hígh'
+}
+
+@test "opaque config paths hash identically for usage and Keychain service" {
+    RUN_CONFIG_SUFFIX=$'\377'
+    RUN_SECURITY_BLOB='{"claudeAiOauth":{"accessToken":"token"}}'
+    RUN_TOKEN=
+    usage='{"five_hour":{"utilization":42},"seven_day":{"utilization":67}}'
+    for side in bash python; do
+        root="$PAIR_ROOT/$side"
+        make_sandbox "$root"
+        mkdir -p "$root/config"$'\377' "$root/run/claude"
+        hash="$(printf '%s' "$root/config"$'\377' | sha256sum | cut -c1-8)"
+        printf '%s' "$usage" >"$root/run/claude/statusline-usage-cache-$hash.json"
+        touch "$root/run/claude/statusline-usage-fetched-$hash"
+        printf '{"five_hour":{"utilization":1}}' >"$root/curl.response"
+    done
+
+    compare_pair '{"version":"1.0.0"}' text
+    assert_contains "$(strip_ansi <"$PAIR_ROOT/python.out")" '5h 42%'
+    for side in bash python; do
+        root="$PAIR_ROOT/$side"
+        hash="$(printf '%s' "$root/config"$'\377' | sha256sum | cut -c1-8)"
+        [ ! -s "$root/security.log" ]
+        find "$root/run/claude" -maxdepth 1 -name "statusline-usage-fetched-$hash" -delete
+    done
+
+    compare_pair '{"version":"1.0.0"}' text
+    assert_contains "$(strip_ansi <"$PAIR_ROOT/python.out")" '5h 1%'
+    for side in bash python; do
+        root="$PAIR_ROOT/$side"
+        hash="$(printf '%s' "$root/config"$'\377' | sha256sum | cut -c1-8)"
+        assert_contains "$(cat "$root/security.log")" "Claude Code-credentials-$hash"
+    done
+}
+
+@test "newline-only stdin matches Bash command substitution emptiness" {
+    compare_pair $'\n\n' raw
+    [ "$(od -An -tx1 "$PAIR_ROOT/python.out" | tr -d ' \n')" = '436c61756465' ]
+}
+
+@test "false fields use jq fallback semantics" {
+    mkdir -p "$PAIR_ROOT/fallback"
+    json="{\"model\":{\"display_name\":false},\"version\":false,\"workspace\":{\"current_dir\":false},\"cwd\":\"$PAIR_ROOT/fallback\"}"
+    compare_pair "$json" raw
+}
+
+@test "Git branch preserves opaque bytes" {
+    repo="$PAIR_ROOT/opaque-git"
+    mkdir -p "$repo"
+    git -C "$repo" init -q -b trunk
+    git -C "$repo" config user.email 168346341+chrisdpurcell@users.noreply.github.com
+    git -C "$repo" config user.name Test
+    printf 'one\n' >"$repo/file"
+    git -C "$repo" add file
+    git -C "$repo" -c core.hooksPath=/dev/null -c commit.gpgSign=false commit -q -m seed
+    git -C "$repo" checkout -q -b $'branch-\377'
+
+    compare_pair "{\"cwd\":\"$repo\",\"version\":\"1.0.0\"}" raw
+}
+
+@test "Git diff retains numstat stdout from nonzero status" {
+    for side in bash python; do
+        root="$PAIR_ROOT/$side"
+        make_sandbox "$root"
+        cat >"$root/bin/git" <<'EOF'
+#!/bin/sh
+case "$*" in
+    *rev-parse*) printf 'trunk\n'; exit 0 ;;
+    *diff*) printf '3\t2\tfile\n'; exit 1 ;;
+esac
+exit 1
+EOF
+        chmod +x "$root/bin/git"
+    done
+
+    compare_pair '{"cwd":"/fixture","version":"1.0.0"}' raw
+    assert_contains "$(strip_ansi <"$PAIR_ROOT/python.out")" '+3'
+    assert_contains "$(strip_ansi <"$PAIR_ROOT/python.out")" '-2'
+}
+
+@test "scalar seven_day matches scalar five_hour jq pipeline" {
+    usage='{"five_hour":{"utilization":10},"seven_day":0}'
+    seed_usage_cache "$PAIR_ROOT/bash" "$usage"
+    seed_usage_cache "$PAIR_ROOT/python" "$usage"
+
+    compare_pair '{"version":"1.0.0"}' raw
+    assert_contains "$(strip_ansi <"$PAIR_ROOT/python.out")" '7d   %'
+}
+
+@test "model context normalization replaces only the first suffix" {
+    compare_pair '{"model":{"display_name":"A (1M context) B (2M context)"},"version":"1.0.0"}' raw
+    assert_contains "$(strip_ansi <"$PAIR_ROOT/python.out")" 'A 1M B (2M context)'
+}
+
+@test "literal null credential tokens fall through each non-env source" {
+    RUN_SECURITY_BLOB='{"claudeAiOauth":{"accessToken":"null"}}'
+    for side in bash python; do
+        root="$PAIR_ROOT/$side"
+        make_sandbox "$root"
+        printf '{"claudeAiOauth":{"accessToken":"file-token"}}' >"$root/config/.credentials.json"
+        printf '{"five_hour":{"utilization":1}}' >"$root/curl.response"
+    done
+    compare_pair '{"version":"1.0.0"}' raw
+    assert_contains "$(cat "$PAIR_ROOT/python/curl.stdin")" 'Bearer file-token'
+
+    unset RUN_SECURITY_BLOB
+    RUN_SECRET_BLOB='{"claudeAiOauth":{"accessToken":"keyring-token"}}'
+    for side in bash python; do
+        root="$PAIR_ROOT/$side"
+        find "$root/run/claude" -maxdepth 1 -name 'statusline-usage-fetched-*' -delete
+        printf '{"claudeAiOauth":{"accessToken":"null"}}' >"$root/config/.credentials.json"
+    done
+    compare_pair '{"version":"1.0.0"}' raw
+    assert_contains "$(cat "$PAIR_ROOT/python/curl.stdin")" 'Bearer keyring-token'
+
+    RUN_SECRET_BLOB='{"claudeAiOauth":{"accessToken":"null"}}'
+    for side in bash python; do
+        root="$PAIR_ROOT/$side"
+        find "$root/run/claude" -maxdepth 1 -name 'statusline-usage-fetched-*' -delete
+        find "$root/config" -maxdepth 1 -name .credentials.json -delete
+        : >"$root/curl.log"
+    done
+    compare_pair '{"version":"1.0.0"}' raw
+    [ ! -s "$PAIR_ROOT/python/curl.log" ]
+
+    RUN_TOKEN=null
+    for side in bash python; do
+        root="$PAIR_ROOT/$side"
+        find "$root/run/claude" -maxdepth 1 -name 'statusline-usage-fetched-*' -delete
+    done
+    compare_pair '{"version":"1.0.0"}' raw
+    [ ! -s "$PAIR_ROOT/python/curl.log" ]
+}
+
+@test "version comparison skips nonnumeric components like Bash" {
+    load_fn version_gt
+    version_gt 'vX.4.0' 'v9.3.0'
+
+    run env PYTHONPATH="$RUNTIME_SITE" python3 -c \
+        'import runpy,sys; m=runpy.run_path(sys.argv[1]); raise SystemExit(0 if m["version_gt"]("vX.4.0", "v9.3.0") else 1)' \
+        "$STATUSLINEPY"
+    [ "$status" -eq 0 ]
+}
+
+@test "extra version components remain in the Bash third field" {
+    load_fn version_gt
+    run version_gt 'v1.2.3.4' 'v1.2.2'
+    [ "$status" -eq 1 ]
+    run version_gt 'v1.2.3' 'v1.2.2.4'
+    [ "$status" -eq 1 ]
+
+    run env PYTHONPATH="$RUNTIME_SITE" python3 -c \
+        'import runpy,sys; f=runpy.run_path(sys.argv[1])["version_gt"]; cases=(("v1.2.3.4", "v1.2.2"), ("v1.2.3", "v1.2.2.4")); raise SystemExit(0 if not any(f(*case) for case in cases) else 1)' \
+        "$STATUSLINEPY"
+    [ "$status" -eq 0 ]
+}
+
+@test "version comparison rejects signed 64-bit overflow like Bash test" {
+    local maximum maximum_minus_one overflow minimum underflow
+    maximum="$(python3 -c 'print((1 << 63) - 1)')"
+    maximum_minus_one="$(python3 -c 'print((1 << 63) - 2)')"
+    overflow="$(python3 -c 'print(1 << 63)')"
+    minimum="$(python3 -c 'print(-(1 << 63))')"
+    underflow="$(python3 -c 'print(-(1 << 63) - 1)')"
+
+    load_fn version_gt
+    version_gt "v$maximum.0.0" "v$maximum_minus_one.0.0"
+    run version_gt "v$overflow.0.0" "v$maximum.0.0"
+    [ "$status" -eq 1 ]
+    run version_gt "v$minimum.0.0" "v$underflow.0.0"
+    [ "$status" -eq 1 ]
+
+    run env PYTHONPATH="$RUNTIME_SITE" python3 -c \
+        'import runpy,sys; f=runpy.run_path(sys.argv[1])["version_gt"]; limit=1 << 63; cases=((limit - 1, limit - 2, True), (limit, limit - 1, False), (-limit, -limit - 1, False)); raise SystemExit(0 if all(f(f"v{left}.0.0", f"v{right}.0.0") is expected for left, right, expected in cases) else 1)' \
+        "$STATUSLINEPY"
+    [ "$status" -eq 0 ]
+}
+
+@test "lone-surrogate JSON follows jq parse-failure output" {
+    compare_pair '{"model":{"display_name":"\ud800"},"version":"1.0.0"}' raw
+    [ "$BASH_STATUS" -eq 0 ]
+    [ "$PYTHON_STATUS" -eq 0 ]
+}
+
+@test "embedded-NUL cwd matches Bash command-substitution bytes" {
+    compare_pair '{"cwd":"bad\u0000path","version":"1.0.0"}' raw
+    [ "$BASH_STATUS" -eq 0 ]
+    [ "$PYTHON_STATUS" -eq 0 ]
+}
+
+@test "embedded-NUL subprocess output matches Bash command substitution" {
+    for side in bash python; do
+        root="$PAIR_ROOT/$side"
+        make_sandbox "$root"
+        cat >"$root/bin/git" <<'EOF'
+#!/bin/sh
+case "$*" in
+    *rev-parse*) printf 'tr\000unk\n'; exit 0 ;;
+    *diff*) exit 0 ;;
+esac
+exit 1
+EOF
+        chmod +x "$root/bin/git"
+    done
+
+    compare_pair '{"cwd":"/fixture","version":"1.0.0"}' raw
+}
+
+@test "intermediate model false follows jq expression failure" {
+    compare_pair '{"model":false,"version":"1.0.0"}' raw
+}
+
+@test "intermediate workspace false suppresses cwd fallback like jq" {
+    compare_pair '{"workspace":false,"cwd":"/fallback","version":"1.0.0"}' raw
 }
