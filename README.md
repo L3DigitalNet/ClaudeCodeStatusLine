@@ -44,10 +44,7 @@ Ask Claude Code:
 
 > Clone <https://github.com/chrisdpurcell/ClaudeCodeStatusLine> to `~/.claude/statusline/` (or `%USERPROFILE%\.claude\statusline\` on Windows) and configure it as my status bar by following its INSTALL.md.
 
-Claude will clone the repo to that path, choose the Bash, PowerShell, or Python implementation,
-and update `settings.json`. The Python option uses the extensionless `statuslinepy` executable and
-requires `/usr/bin/python3` 3.10+ with its pinned Rich and Humanize dependencies. Full
-step-by-step instructions Claude follows live in [INSTALL.md](INSTALL.md).
+Claude will clone the repo to that path, choose the Bash, PowerShell, or Python implementation, and update `settings.json`. The Python option uses the extensionless `statuslinepy` executable and requires `/usr/bin/python3` 3.10+ with its pinned Rich and Humanize dependencies. Full step-by-step instructions Claude follows live in [INSTALL.md](INSTALL.md).
 
 Restart Claude Code after Claude saves the configuration.
 
