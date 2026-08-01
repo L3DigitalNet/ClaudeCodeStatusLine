@@ -16,3 +16,10 @@ Thumbs.db
 *.swp
 *~
 .ruff_cache/
+
+# Formatting/Linting
+.editorconfig
+.markdownlint-cli2.jsonc
+.markdownlint.json
+.prettierignore
+.prettierrc.json
