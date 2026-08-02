@@ -1,0 +1,695 @@
+#!/usr/bin/python3
+"""Antigravity CLI footer statusline script.
+
+Parses agent telemetry JSON payload from standard input and renders a 2-row
+formatted status bar with model info, agent state, git repo/branch, CWD, token
+counts, context window capacity/usage, and 5h/weekly quota pacing.
+"""
+
+import json
+import math
+import os
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+from collections.abc import Sequence
+from contextlib import suppress
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from pathlib import Path
+from typing import Literal
+
+from rich.console import Console
+from rich.text import Text
+
+__all__ = [
+    "AgentPayload",
+    "ContextWindow",
+    "ContextWindowInfo",
+    "CtxColor",
+    "ModelInfo",
+    "QuotaBucket",
+    "QuotaBucketInfo",
+    "QuotaColor",
+    "StatuslineView",
+    "WorkspaceInfo",
+    "build_statusline_view",
+    "format_ctx_size",
+    "format_pct",
+    "format_reset_time_short",
+    "format_reset_time_with_day",
+    "format_tokens",
+    "get_ctx_color",
+    "get_git_branch",
+    "get_quota_rate_color",
+    "main",
+    "parse_payload",
+    "render_statusline",
+    "write_text_atomic",
+]
+
+CtxColor = Literal["green", "yellow", "orange3", "red"]
+QuotaColor = Literal["green", "yellow", "red"]
+
+
+# --- Domain Models ---
+
+
+@dataclass(frozen=True)
+class ModelInfo:
+    raw_model: str
+    base_model: str
+    effort: str
+
+
+@dataclass(frozen=True)
+class WorkspaceInfo:
+    cwd: Path
+    display_cwd: str
+    repo_name: str
+    workspace_name: str | None
+    git_root: Path | None
+    project_dir: Path | None
+
+
+@dataclass(frozen=True)
+class ContextWindow:
+    in_tokens: int
+    out_tokens: int
+    used_pct: float
+    capacity: int
+
+
+@dataclass(frozen=True)
+class QuotaBucket:
+    remaining_fraction: float
+    reset_time: str | None
+    reset_in_seconds: float | None
+
+
+@dataclass(frozen=True)
+class AgentPayload:
+    model: ModelInfo
+    agent_state: str
+    workspace: WorkspaceInfo
+    context: ContextWindow
+    q5h: QuotaBucket | None
+    qwk: QuotaBucket | None
+
+
+# --- Presentation Models ---
+
+
+@dataclass(frozen=True)
+class ContextWindowInfo:
+    in_tokens_str: str
+    out_tokens_str: str
+    capacity_str: str
+    used_pct: float
+    color: CtxColor
+
+
+@dataclass(frozen=True)
+class QuotaBucketInfo:
+    used_pct: float
+    reset_time_short: str
+    reset_time_day: str
+    color: QuotaColor
+    remaining_fraction: float
+
+
+@dataclass(frozen=True)
+class StatuslineView:
+    model_str: str
+    agent_state: str
+    state_style: str
+    repo_branch: str
+    display_cwd: str
+    context: ContextWindowInfo
+    q5h: QuotaBucketInfo | None
+    qwk: QuotaBucketInfo | None
+
+
+# --- Scalar / Boundary Parsing Helpers ---
+
+
+def _parse_int_opt(val: object) -> int | None:
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, int):
+        return val
+    if isinstance(val, float):
+        if math.isnan(val) or math.isinf(val):
+            return None
+        return int(val)
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return None
+        try:
+            f = float(s)
+            if math.isnan(f) or math.isinf(f):
+                return None
+            return int(f)
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _parse_float_opt(val: object) -> float | None:
+    if isinstance(val, bool):
+        return None
+    if isinstance(val, (int, float)):
+        f = float(val)
+        if math.isnan(f) or math.isinf(f):
+            return None
+        return f
+    if isinstance(val, str):
+        s = val.strip()
+        if not s:
+            return None
+        try:
+            f = float(s)
+            if math.isnan(f) or math.isinf(f):
+                return None
+            return f
+        except (ValueError, TypeError):
+            return None
+    return None
+
+
+def _parse_str_opt(val: object) -> str | None:
+    if isinstance(val, str) and val.strip():
+        return val.strip()
+    return None
+
+
+def _parse_path_opt(val: object) -> Path | None:
+    if isinstance(val, str) and val.strip():
+        return Path(val.strip())
+    return None
+
+
+# --- Formatters & Helpers ---
+
+
+def format_tokens(n: int | float) -> str:
+    """Formats token count rounded to nearest .1k (e.g. 1.2k) or .1M if >= 1,000,000."""
+    val = float(n)
+    if val >= 1_000_000:
+        return f"{val / 1_000_000:.1f}M"
+    return f"{val / 1_000:.1f}k"
+
+
+def format_ctx_size(size: int | float) -> str:
+    """Formats context window capacity rounded to 1M, 200k, etc."""
+    val = int(size)
+    if val >= 1_000_000:
+        m = round(val / 1_000_000)
+        return f"{m}M"
+    if val >= 1_000:
+        k = round(val / 1_000)
+        return f"{k}k"
+    return str(val)
+
+
+def format_pct(usage_pct: float) -> str:
+    """Formats usage percentage cleanly:
+    - 0.0% -> 0%
+    - 0.0% < usage < 1.0% -> <1%
+    - >= 1.0% -> rounded integer %
+    """
+    if usage_pct <= 0.0:
+        return "0%"
+    if usage_pct < 1.0:
+        return "<1%"
+    return f"{round(usage_pct)}%"
+
+
+def get_git_branch(cwd: Path) -> str:
+    """Returns current git branch for cwd, or empty string if not in git repo."""
+    if not cwd.is_dir():
+        return ""
+    try:
+        res = subprocess.run(
+            ["git", "-C", str(cwd), "symbolic-ref", "--short", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=0.5,
+            check=False,
+        )
+        if res.returncode == 0 and res.stdout.strip():
+            branch = res.stdout.strip()
+            if branch != "HEAD":
+                return branch
+
+        res2 = subprocess.run(
+            ["git", "-C", str(cwd), "rev-parse", "--abbrev-ref", "HEAD"],
+            capture_output=True,
+            text=True,
+            timeout=0.5,
+            check=False,
+        )
+        if res2.returncode == 0 and res2.stdout.strip():
+            branch = res2.stdout.strip()
+            if branch != "HEAD":
+                return branch
+        return ""
+    except (subprocess.TimeoutExpired, subprocess.SubprocessError, OSError):
+        return ""
+
+
+def _parse_reset_datetime(
+    iso_str: str | None, reset_in_sec: float | None, now: datetime
+) -> datetime | None:
+    dt: datetime | None = None
+    if iso_str:
+        with suppress(ValueError):
+            dt = datetime.fromisoformat(iso_str.replace("Z", "+00:00")).astimezone(UTC)
+    if dt is None and reset_in_sec is not None:
+        with suppress(ValueError, OverflowError, TypeError):
+            dt = datetime.fromtimestamp(now.timestamp() + reset_in_sec, tz=UTC)
+    return dt
+
+
+def format_reset_time_short(iso_str: str | None, reset_in_sec: float | None, now: datetime) -> str:
+    """Formats reset timestamp as 'HH:MM' in local time."""
+    dt = _parse_reset_datetime(iso_str, reset_in_sec, now)
+    if dt:
+        return dt.astimezone().strftime("%H:%M")
+    return ""
+
+
+def format_reset_time_with_day(
+    iso_str: str | None, reset_in_sec: float | None, now: datetime
+) -> str:
+    """Formats reset timestamp as 'Ddd@HH:MM' in local time."""
+    dt = _parse_reset_datetime(iso_str, reset_in_sec, now)
+    if dt:
+        local_dt = dt.astimezone()
+        day = local_dt.strftime("%a").capitalize()
+        t_str = local_dt.strftime("%H:%M")
+        return f"{day}@{t_str}"
+    return ""
+
+
+def get_ctx_color(used_pct: float) -> CtxColor:
+    """Returns color based on Context Used %:
+    0-30%: green, 30-60%: yellow, 60-80%: orange3, 80-100%: red.
+    """
+    if used_pct <= 30.0:
+        return "green"
+    if used_pct <= 60.0:
+        return "yellow"
+    if used_pct <= 80.0:
+        return "orange3"
+    return "red"
+
+
+def get_quota_rate_color(
+    quota_bucket: QuotaBucket | None, total_window_sec: float, now: datetime
+) -> QuotaColor:
+    """Calculates cumulative usage pacing relative to target budget at elapsed time t."""
+    if quota_bucket is None:
+        return "green"
+
+    rem_frac = max(0.0, min(1.0, quota_bucket.remaining_fraction))
+    usage_pct = (1.0 - rem_frac) * 100.0
+
+    reset_sec = quota_bucket.reset_in_seconds
+    if reset_sec is None and quota_bucket.reset_time:
+        with suppress(ValueError):
+            dt = datetime.fromisoformat(quota_bucket.reset_time.replace("Z", "+00:00"))
+            reset_sec = max(0.0, (dt - now).total_seconds())
+
+    if reset_sec is None or reset_sec > total_window_sec:
+        reset_sec = total_window_sec
+
+    elapsed_sec = max(1.0, total_window_sec - reset_sec)
+    elapsed_hours = elapsed_sec / 3600.0
+    total_window_hours = total_window_sec / 3600.0
+
+    ideal_rate = 100.0 / total_window_hours
+    target_usage = ideal_rate * elapsed_hours
+    yellow_thresh = target_usage * (4.0 / 3.0)
+
+    if usage_pct <= target_usage:
+        return "green"
+    if usage_pct <= yellow_thresh:
+        return "yellow"
+    return "red"
+
+
+def _fsync_parent_directory(path: Path) -> None:
+    if not hasattr(os, "O_DIRECTORY"):
+        return
+    try:
+        directory_fd = os.open(path.parent, os.O_RDONLY | os.O_DIRECTORY)
+    except OSError:
+        return
+    try:
+        os.fsync(directory_fd)
+    finally:
+        os.close(directory_fd)
+
+
+def write_text_atomic(path: Path, content: str) -> None:
+    """Atomically writes content to path using temporary file staging."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing_mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else None
+
+    temp_path: Path | None = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            "w",
+            encoding="utf-8",
+            dir=path.parent,
+            delete=False,
+        ) as temp_file:
+            temp_path = Path(temp_file.name)
+            temp_file.write(content)
+            temp_file.flush()
+            os.fsync(temp_file.fileno())
+
+        if existing_mode is not None:
+            temp_path.chmod(existing_mode)
+
+        temp_path.replace(path)
+        _fsync_parent_directory(path)
+    except BaseException:
+        if temp_path is not None:
+            temp_path.unlink(missing_ok=True)
+        raise
+
+
+def _extract_quota_bucket(raw_bucket: object) -> QuotaBucket | None:
+    if not isinstance(raw_bucket, dict):
+        return None
+
+    raw_dict: dict[str, object] = raw_bucket
+    rem_frac_val = _parse_float_opt(raw_dict.get("remaining_fraction"))
+    if rem_frac_val is None:
+        return None
+    rem_frac = max(0.0, min(1.0, rem_frac_val))
+
+    reset_time = _parse_str_opt(raw_dict.get("reset_time"))
+
+    reset_sec_val = _parse_float_opt(raw_dict.get("reset_in_seconds"))
+    reset_sec = reset_sec_val if reset_sec_val is not None and reset_sec_val >= 0.0 else None
+
+    return QuotaBucket(
+        remaining_fraction=rem_frac,
+        reset_time=reset_time,
+        reset_in_seconds=reset_sec,
+    )
+
+
+def parse_payload(raw_json: str, now: datetime) -> AgentPayload | None:
+    """Parses raw JSON string into typed AgentPayload domain model."""
+    if not raw_json.strip():
+        return None
+    try:
+        raw_data: object = json.loads(raw_json)
+    except json.JSONDecodeError:
+        return None
+
+    if not isinstance(raw_data, dict):
+        return None
+
+    data: dict[str, object] = raw_data
+
+    # Model & Effort
+    model_obj = data.get("model")
+    model_dict: dict[str, object] = model_obj if isinstance(model_obj, dict) else {}
+
+    raw_name = (
+        _parse_str_opt(model_dict.get("display_name"))
+        or _parse_str_opt(model_dict.get("id"))
+        or "Gemini 3.6 Flash"
+    )
+    raw_model = raw_name
+    base_model = re.sub(r"\s*\((Low|Medium|High)\)$", "", raw_model, flags=re.IGNORECASE).strip()
+
+    effort = _parse_str_opt(model_dict.get("effort")) or ""
+    if not effort:
+        match = re.search(r"\((Low|Medium|High)\)$", raw_model, re.IGNORECASE)
+        if match:
+            effort = match.group(1).lower()
+
+    model_info = ModelInfo(raw_model=raw_model, base_model=base_model, effort=effort.lower())
+
+    # Agent State
+    state = _parse_str_opt(data.get("agent_state")) or "idle"
+
+    # Workspace & CWD
+    cwd_path = _parse_path_opt(data.get("cwd"))
+    cwd = cwd_path.resolve() if cwd_path is not None else Path.cwd().resolve()
+
+    ws_obj = data.get("workspace")
+    ws_dict: dict[str, object] = ws_obj if isinstance(ws_obj, dict) else {}
+
+    workspace_name = _parse_str_opt(ws_dict.get("workspace_name"))
+    git_root = _parse_path_opt(ws_dict.get("git_root"))
+    project_dir = _parse_path_opt(ws_dict.get("project_dir"))
+
+    if workspace_name:
+        repo_name = workspace_name
+    elif git_root:
+        repo_name = git_root.name
+    elif project_dir:
+        repo_name = project_dir.name
+    else:
+        repo_name = cwd.name
+
+    display_cwd: str = str(cwd)
+    home = Path.home()
+    if cwd == home or cwd.is_relative_to(home):
+        with suppress(ValueError):
+            display_cwd = f"~/{cwd.relative_to(home)}" if cwd != home else "~"
+
+    workspace_info = WorkspaceInfo(
+        cwd=cwd,
+        display_cwd=display_cwd,
+        repo_name=repo_name,
+        workspace_name=workspace_name,
+        git_root=git_root,
+        project_dir=project_dir,
+    )
+
+    # Context Window
+    ctx_obj = data.get("context_window")
+    ctx_dict: dict[str, object] = ctx_obj if isinstance(ctx_obj, dict) else {}
+
+    in_tokens_val = _parse_int_opt(ctx_dict.get("total_input_tokens"))
+    in_tokens = in_tokens_val if in_tokens_val is not None and in_tokens_val >= 0 else 0
+
+    out_tokens_val = _parse_int_opt(ctx_dict.get("total_output_tokens"))
+    out_tokens = out_tokens_val if out_tokens_val is not None and out_tokens_val >= 0 else 0
+
+    cap_val = _parse_int_opt(ctx_dict.get("context_window_size"))
+    capacity = cap_val if cap_val is not None and cap_val > 0 else 1048576
+
+    rem_pct_val = _parse_float_opt(ctx_dict.get("remaining_percentage"))
+    used_pct_val = _parse_float_opt(ctx_dict.get("used_percentage"))
+
+    if rem_pct_val is not None:
+        rem_clamped = max(0.0, min(100.0, rem_pct_val))
+        used_pct = 100.0 - rem_clamped
+    elif used_pct_val is not None:
+        used_pct = max(0.0, min(100.0, used_pct_val))
+    else:
+        used_pct = 0.0
+
+    context_info = ContextWindow(
+        in_tokens=in_tokens,
+        out_tokens=out_tokens,
+        used_pct=used_pct,
+        capacity=capacity,
+    )
+
+    # Quotas
+    quotas_obj = data.get("quota")
+    quotas_dict: dict[str, object] = quotas_obj if isinstance(quotas_obj, dict) else {}
+
+    # 5h Bucket Selection
+    q5h_bucket: QuotaBucket | None = None
+    for k, v in quotas_dict.items():
+        if "5h" in str(k).lower():
+            candidate = _extract_quota_bucket(v)
+            if candidate is not None and (
+                q5h_bucket is None or candidate.remaining_fraction < q5h_bucket.remaining_fraction
+            ):
+                q5h_bucket = candidate
+
+    # Weekly Bucket Selection
+    qwk_bucket: QuotaBucket | None = None
+    for k, v in quotas_dict.items():
+        if "weekly" in str(k).lower() or "wk" in str(k).lower():
+            candidate = _extract_quota_bucket(v)
+            if candidate is not None and (
+                qwk_bucket is None or candidate.remaining_fraction < qwk_bucket.remaining_fraction
+            ):
+                qwk_bucket = candidate
+
+    return AgentPayload(
+        model=model_info,
+        agent_state=state,
+        workspace=workspace_info,
+        context=context_info,
+        q5h=q5h_bucket,
+        qwk=qwk_bucket,
+    )
+
+
+def build_statusline_view(payload: AgentPayload, now: datetime) -> StatuslineView:
+    """Constructs StatuslineView presentation model from AgentPayload domain model."""
+    if payload.model.effort:
+        model_str = f"{payload.model.base_model} ({payload.model.effort})"
+    else:
+        model_str = payload.model.base_model
+
+    state_colors = {
+        "idle": "bold green",
+        "thinking": "bold yellow",
+        "running": "bold cyan",
+        "tool_use": "bold magenta",
+        "waiting": "bold orange3",
+        "error": "bold red",
+    }
+    state_style = state_colors.get(payload.agent_state.lower(), "bold green")
+
+    branch = get_git_branch(payload.workspace.cwd)
+    repo_branch = (
+        f"{payload.workspace.repo_name}@{branch}" if branch else payload.workspace.repo_name
+    )
+
+    ctx_info = ContextWindowInfo(
+        in_tokens_str=format_tokens(payload.context.in_tokens),
+        out_tokens_str=format_tokens(payload.context.out_tokens),
+        capacity_str=format_ctx_size(payload.context.capacity),
+        used_pct=payload.context.used_pct,
+        color=get_ctx_color(payload.context.used_pct),
+    )
+
+    q5h_info: QuotaBucketInfo | None = None
+    if payload.q5h is not None:
+        u_pct = max(0.0, min(100.0, round((1.0 - payload.q5h.remaining_fraction) * 100.0, 6)))
+        r_short = format_reset_time_short(payload.q5h.reset_time, payload.q5h.reset_in_seconds, now)
+        r_day = format_reset_time_with_day(
+            payload.q5h.reset_time, payload.q5h.reset_in_seconds, now
+        )
+        clr = get_quota_rate_color(payload.q5h, 5.0 * 3600.0, now)
+        q5h_info = QuotaBucketInfo(
+            used_pct=u_pct,
+            reset_time_short=r_short,
+            reset_time_day=r_day,
+            color=clr,
+            remaining_fraction=payload.q5h.remaining_fraction,
+        )
+
+    qwk_info: QuotaBucketInfo | None = None
+    if payload.qwk is not None:
+        u_pct = max(0.0, min(100.0, round((1.0 - payload.qwk.remaining_fraction) * 100.0, 6)))
+        r_short = format_reset_time_short(payload.qwk.reset_time, payload.qwk.reset_in_seconds, now)
+        r_day = format_reset_time_with_day(
+            payload.qwk.reset_time, payload.qwk.reset_in_seconds, now
+        )
+        clr = get_quota_rate_color(payload.qwk, 7.0 * 86400.0, now)
+        qwk_info = QuotaBucketInfo(
+            used_pct=u_pct,
+            reset_time_short=r_short,
+            reset_time_day=r_day,
+            color=clr,
+            remaining_fraction=payload.qwk.remaining_fraction,
+        )
+
+    return StatuslineView(
+        model_str=model_str,
+        agent_state=payload.agent_state,
+        state_style=state_style,
+        repo_branch=repo_branch,
+        display_cwd=payload.workspace.display_cwd,
+        context=ctx_info,
+        q5h=q5h_info,
+        qwk=qwk_info,
+    )
+
+
+def render_statusline(view: StatuslineView, console: Console | None = None) -> None:
+    """Renders StatuslineView using Rich Console with soft_wrap protection."""
+    if console is None:
+        console = Console(force_terminal=True, color_system="truecolor")
+
+    row1 = Text()
+    row1.append(view.model_str, style="bold cyan")
+    row1.append(" | ", style="dim white")
+    row1.append(view.agent_state, style=view.state_style)
+    row1.append(" | ", style="dim white")
+    row1.append(view.repo_branch, style="bold magenta")
+    row1.append(" | ", style="dim white")
+    row1.append(view.display_cwd, style="bold blue")
+
+    ctx_str = f"{format_pct(view.context.used_pct)} {view.context.capacity_str}"
+
+    if view.q5h is not None:
+        q5h_str = f"5h: {format_pct(view.q5h.used_pct)}"
+        if view.q5h.reset_time_short:
+            q5h_str += f" @{view.q5h.reset_time_short}"
+        q5h_color = view.q5h.color
+    else:
+        q5h_str = "5h: 0%"
+        q5h_color = "green"
+
+    if view.qwk is not None:
+        qwk_str = f"Wk: {format_pct(view.qwk.used_pct)}"
+        if view.qwk.reset_time_day:
+            qwk_str += f" {view.qwk.reset_time_day}"
+        qwk_color = view.qwk.color
+    else:
+        qwk_str = "Wk: 0%"
+        qwk_color = "green"
+
+    row2 = Text()
+    row2.append(f"In: {view.context.in_tokens_str}", style="cyan")
+    row2.append(" | ", style="dim white")
+    row2.append(f"Out: {view.context.out_tokens_str}", style="cyan")
+    row2.append(" | ", style="dim white")
+    row2.append(f"Ctx: {ctx_str}", style=view.context.color)
+    row2.append(" | ", style="dim white")
+    row2.append(q5h_str, style=q5h_color)
+    row2.append(" | ", style="dim white")
+    row2.append(qwk_str, style=qwk_color)
+
+    console.print(row1, soft_wrap=True)
+    console.print(row2, soft_wrap=True)
+
+
+def main(argv: Sequence[str] | None = None) -> int:
+    """Main CLI entrypoint for Antigravity statusline rendering.
+
+    Returns:
+        0 on successful render or empty input.
+    """
+    raw_input = sys.stdin.read()
+    if not raw_input.strip():
+        return 0
+
+    now = datetime.now(UTC)
+    payload = parse_payload(raw_input, now)
+    if payload is None:
+        return 0
+
+    cache_path = Path.home() / ".gemini/antigravity-cli/last_payload.json"
+    with suppress(OSError):
+        write_text_atomic(cache_path, raw_input)
+
+    view = build_statusline_view(payload, now)
+    render_statusline(view)
+
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())
