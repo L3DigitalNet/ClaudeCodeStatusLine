@@ -8,16 +8,17 @@ setup() {
     RUNTIME_SITE="$(python3 -c 'import os, humanize, rich; print(os.pathsep.join({os.path.dirname(os.path.dirname(humanize.__file__)), os.path.dirname(os.path.dirname(rich.__file__))}))')"
 }
 
-@test "statuslinepy-sub renders single task JSON with 2-row grid and git branch" {
+@test "statuslinepy-sub renders single task JSON with single-row format" {
     json="{\"tasks\":[{\"id\":\"task-1\",\"name\":\"Generalist subagent\",\"model\":\"Claude 3.5 Sonnet\",\"effort\":\"high\",\"cwd\":\"$REPO_ROOT\"}]}"
     run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
     [ "$status" -eq 0 ]
     assert_contains "$output" '"id":"task-1"'
-    assert_contains "$output" 'Claude 3.5 Sonnet'
-    assert_contains "$output" 'high'
-    assert_contains "$output" 'Generalist subagent'
     content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
-    assert_contains "$content" 'ClaudeCodeStatusLine@'
+    assert_contains "$content" 'Generalist subagent'
+    assert_contains "$content" 'Claude 3.5 Sonnet'
+    assert_contains "$content" 'high'
+    # Single row: no newline in content
+    [ "$(printf '%s' "$content" | wc -l)" -eq 0 ]
 }
 
 @test "statuslinepy-sub handles thinking flag and effort styles" {
@@ -50,12 +51,10 @@ setup() {
     run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
     [ "$status" -eq 0 ]
     content="$(printf '%s' "$output" | jq -r '.content')"
-    line1="$(printf '%s' "$content" | head -n1 | strip_ansi)"
-    line2="$(printf '%s' "$content" | tail -n1 | strip_ansi)"
-    cell_w1="$(python3 -c "from rich.cells import cell_len; print(cell_len('''$line1'''))")"
-    cell_w2="$(python3 -c "from rich.cells import cell_len; print(cell_len('''$line2'''))")"
-    [ "$cell_w1" -le 20 ]
-    [ "$cell_w2" -le 20 ]
+    # Single row; strip ANSI and measure
+    line="$(printf '%s' "$content" | strip_ansi)"
+    cell_w="$(python3 -c "from rich.cells import cell_len; print(cell_len('''$line'''))")"
+    [ "$cell_w" -le 20 ]
 }
 
 @test "statuslinepy-sub validates tasks independently when surrogate is present" {
@@ -116,4 +115,23 @@ print(json.dumps({"tasks": [nested]}))
 ')"
     run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$nested_json"
     [ "$status" -eq 0 ]
+}
+
+@test "statuslinepy-sub renders elapsed time from startTime" {
+    # startTime ~1 minute ago (epoch ms)
+    start_ms="$(python3 -c 'import time; print(int((time.time() - 75) * 1000))')"
+    json="{\"id\":\"t-elapsed\",\"name\":\"Agent\",\"model\":\"Claude\",\"startTime\":$start_ms,\"cwd\":\"\"}"
+    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    [ "$status" -eq 0 ]
+    content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
+    # Should contain a mm:ss elapsed like "1:15" or "1:16"
+    [[ "$content" =~ [0-9]+:[0-9]{2} ]]
+}
+
+@test "statuslinepy-sub renders task status field" {
+    json='{"id":"t-status","name":"Searcher","status":"running","model":"Claude","cwd":""}'
+    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    [ "$status" -eq 0 ]
+    content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
+    assert_contains "$content" 'Searcher/running'
 }

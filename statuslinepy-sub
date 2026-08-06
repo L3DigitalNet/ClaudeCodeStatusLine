@@ -3,6 +3,8 @@
 
 Rich owns terminal styling while Humanize supplies SI token prefixes for task
 token counts. Accepts subagent task batches on stdin and outputs JSON task rows.
+
+Format: model effort | elapsed | tokens | task | cwd
 """
 
 from __future__ import annotations
@@ -12,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import time
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
@@ -20,7 +23,7 @@ from rich.cells import cell_len
 from rich.color import ColorSystem
 from rich.style import Style
 
-VERSION = "1.8.2"
+VERSION = "1.9.0"
 BLUE = "rgb(0,153,255)"
 ORANGE = "rgb(255,176,85)"
 GREEN = "rgb(0,160,0)"
@@ -307,23 +310,29 @@ def discover_git_branches(cwds: set[str]) -> dict[str, str]:
     return cache
 
 
-def build_grid_lines(row_one: list[Text], row_two: list[Text]) -> list[Text]:
+def join_cells(cells: list[Text]) -> Text:
+    """Join non-empty cells with ' | ' separators."""
     separator = combine(" ", text("|", DIM), " ")
-    lines = [Text(), Text()]
-    max_cols = max(len(row_one), len(row_two))
-    for index in range(max_cols):
-        width = max(
-            visible_len(row_one[index]) if index < len(row_one) else 0,
-            visible_len(row_two[index]) if index < len(row_two) else 0,
-        )
-        for line, row in zip(lines, (row_one, row_two), strict=True):
-            if index >= len(row):
-                continue
-            cell = row[index]
-            line.append_text(padded(cell, width) if index < len(row) - 1 else cell)
-            if index < len(row) - 1:
-                line.append_text(separator)
-    return lines
+    result = Text()
+    first = True
+    for cell in cells:
+        if not cell:
+            continue
+        if not first:
+            result.append_text(separator)
+        result.append_text(cell)
+        first = False
+    return result
+
+
+def format_elapsed(start_time_ms: int) -> str:
+    """Return a compact HH:MM or MM:SS elapsed string from an epoch-ms timestamp."""
+    elapsed_s = max(0, int(time.time() - start_time_ms / 1000.0))
+    hours, rem = divmod(elapsed_s, 3600)
+    minutes, seconds = divmod(rem, 60)
+    if hours > 0:
+        return f"{hours}:{minutes:02d}h"
+    return f"{minutes}:{seconds:02d}"
 
 
 def render_task(
@@ -331,10 +340,27 @@ def render_task(
     max_columns: int,
     git_branches: dict[str, str],
 ) -> str:
-    """Render a single subagent task object into a width-aware status line."""
+    """Render a single subagent task object into a single-row status line.
+
+    Format: model effort | elapsed | tokens | task | cwd
+    """
     home = os.environ.get("HOME", "")
 
-    # Model
+    # ── task / status ─────────────────────────────────────────────────────
+    name_val = task.get("name") or task.get("label") or task.get("type") or "agent"
+    if isinstance(name_val, dict):
+        name_val = nested(name_val, "name", default="agent")
+    name_str = sanitize_text(name_val, strip_spaces=True) or "agent"
+
+    status_raw = sanitize_text(task.get("status"), strip_spaces=True)
+    if status_raw:
+        cell_task = combine(
+            text(name_str, WHITE), text("/", DIM), text(status_raw, DIM)
+        )
+    else:
+        cell_task = text(name_str, WHITE)
+
+    # ── model effort ──────────────────────────────────────────────────────
     model_raw = nested(task, "model", "display_name", default=None)
     if model_raw is None:
         model_raw = task.get("model")
@@ -348,7 +374,6 @@ def render_task(
         model_name = "Claude"
     cell_model = text(model_name, BLUE)
 
-    # Effort
     effort_raw = nested(task, "effort", "level", default=None)
     if effort_raw is None:
         effort_raw = task.get("effort")
@@ -371,20 +396,16 @@ def render_task(
     else:
         cell_effort = text("-", DIM)
 
-    if (
+    thinking_on = (
         nested(task, "thinking", "enabled", default=False) is True
         or task.get("thinking") is True
-    ):
+    )
+    if thinking_on:
         cell_effort = combine(text("✦", PURPLE), " ", cell_effort)
 
-    # Agent Name
-    name_val = task.get("name") or task.get("label") or task.get("type") or "agent"
-    if isinstance(name_val, dict):
-        name_val = nested(name_val, "name", default="agent")
-    name_str = sanitize_text(name_val, strip_spaces=True) or "agent"
-    cell_name = text(name_str, WHITE)
+    cell_model_effort = combine(cell_model, " ", cell_effort)
 
-    # Tokens / Context Usage with 1M context regression protection
+    # ── tokens / context ──────────────────────────────────────────────────
     token_count = integer(task.get("tokenCount") or task.get("tokens") or 0)
     context_size = integer(
         task.get("contextWindowSize") or task.get("context_window_size") or 0
@@ -406,64 +427,66 @@ def render_task(
             pct_str = f" {pct_val}%" if pct_val is not None else ""
             cell_tokens = combine(text(prefix, ORANGE), text(pct_str, GREEN))
 
-    # CWD & Git branch
+    # ── elapsed ───────────────────────────────────────────────────────────
+    cell_elapsed = Text()
+    start_time_raw = task.get("startTime")
+    if start_time_raw is not None:
+        try:
+            start_ms = int(Decimal(str(start_time_raw)))
+            if 0 < start_ms < 9_999_999_999_999:
+                cell_elapsed = text(format_elapsed(start_ms), DIM)
+        except (InvalidOperation, ValueError, OverflowError):
+            pass
+
+    # ── cwd ───────────────────────────────────────────────────────────────
     cwd_raw = nested(task, "workspace", "current_dir", default=None, strip_spaces=False)
     if cwd_raw is None:
         cwd_raw = task.get("cwd")
     cwd_string = sanitize_text(cwd_raw, strip_spaces=False)
 
     if cwd_string:
-        display_dir = cwd_string.rsplit("/", 1)[-1]
-        worktree = str(nested(task, "worktree", "name", default="") or "")
-        if not worktree and isinstance(task.get("worktree"), str):
-            worktree = sanitize_text(task.get("worktree"), strip_spaces=True)
-        branch = git_branches.get(cwd_string, "")
-        cell_repo = text(display_dir, GREEN)
-        if branch:
-            cell_repo = combine(cell_repo, text("@", DIM), text(branch, BLUE))
-        if worktree:
-            cell_repo = combine(cell_repo, text(":", DIM), text(worktree, CYAN))
         cell_cwd = text(collapse_home(cwd_string, home), CYAN)
     else:
-        cell_repo = text("-", DIM)
         cell_cwd = text("-", DIM)
 
-    row_one = [cell_model, cell_effort, cell_name]
-    if cell_tokens:
-        row_one.append(cell_tokens)
-    row_two = [cell_repo, cell_cwd]
+    # ── assemble single row ───────────────────────────────────────────────
+    # Order: model effort | elapsed | tokens | task | cwd
+    cells: list[Text] = [
+        cell_model_effort,
+        cell_elapsed,
+        cell_tokens,
+        cell_task,
+        cell_cwd,
+    ]
+    line = join_cells(cells)
 
-    lines = build_grid_lines(row_one, row_two)
+    # Adaptive truncation (single row)
+    if max_columns > 0 and visible_len(line) > max_columns:
+        # Tier 1: drop elapsed
+        cells = [cell_model_effort, cell_tokens, cell_task, cell_cwd]
+        line = join_cells(cells)
 
-    # Check terminal width bounds and adaptively truncate if needed
-    if max_columns > 0 and (
-        visible_len(lines[0]) > max_columns or visible_len(lines[1]) > max_columns
-    ):
-        # Tier 1: If tokens cell pushes row 1 over width, drop tokens cell
-        if cell_tokens and visible_len(lines[0]) > max_columns:
-            row_one = [cell_model, cell_effort, cell_name]
-            lines = build_grid_lines(row_one, row_two)
+        # Tier 2: drop tokens
+        if visible_len(line) > max_columns:
+            cells = [cell_model_effort, cell_task, cell_cwd]
+            line = join_cells(cells)
 
-        # Tier 2: Truncate path/name if still over width
-        if visible_len(lines[1]) > max_columns and visible_len(cell_cwd) > 15:
-            target_w = max(
-                10, max_columns - visible_len(lines[1]) + visible_len(cell_cwd)
-            )
-            row_two[1] = truncate_text(cell_cwd, target_w)
-            lines = build_grid_lines(row_one, row_two)
+        # Tier 3: truncate cwd
+        if visible_len(line) > max_columns and visible_len(cell_cwd) > 10:
+            target_w = max(8, max_columns - visible_len(line) + visible_len(cell_cwd))
+            cells[-1] = truncate_text(cell_cwd, target_w)
+            line = join_cells(cells)
 
-        if visible_len(lines[0]) > max_columns and visible_len(cell_name) > 10:
-            target_w = max(
-                8, max_columns - visible_len(lines[0]) + visible_len(cell_name)
-            )
-            row_one[2] = truncate_text(cell_name, target_w)
-            lines = build_grid_lines(row_one, row_two)
+        # Tier 4: truncate task name
+        if visible_len(line) > max_columns and visible_len(cell_task) > 8:
+            target_w = max(6, max_columns - visible_len(line) + visible_len(cell_task))
+            cells[-2] = truncate_text(cell_task, target_w)
+            line = join_cells(cells)
 
-        # Tier 3: Hard truncate lines to max_columns if necessary
-        lines[0] = truncate_text(lines[0], max_columns)
-        lines[1] = truncate_text(lines[1], max_columns)
+        # Tier 5: hard truncate
+        line = truncate_text(line, max_columns)
 
-    return combine(lines[0], "\n", lines[1]).render()
+    return line.render()
 
 
 def main() -> int:
