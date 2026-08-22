@@ -1,0 +1,5 @@
+{
+    "include": ["statuslinepy-sub"],
+    "pythonVersion": "3.10",
+    "typeCheckingMode": "strict"
+}

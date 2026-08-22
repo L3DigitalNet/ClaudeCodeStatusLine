@@ -55,6 +55,7 @@ print(" ".join(positions))
     run_sub "$json"
     [ "$status" -eq 0 ]
     content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
+    assert_contains "$content" 'Fable 1M'
     assert_contains "$content" '150k'
     refute_contains "$content" '/1M'
     refute_contains "$content" '%'
@@ -280,4 +281,76 @@ print(json.dumps({"tasks": [nested]}))
     assert_contains "$label" '0 | Label fallback'
     assert_contains "$type" '1:01h'
     assert_contains "$type" 'Type fallback'
+}
+
+@test "statuslinepy-sub bounds model normalization work and strips directional controls" {
+    digits="$(printf '9%.0s' {1..100000})"
+    json="$(jq -nc --arg model "($digits" '{tasks:[{id:"hostile",name:"report\u202egnp.exe",model:$model},{id:"sibling",name:"Sibling",model:"Claude"}]}')"
+
+    run_sub "$json"
+
+    [ "$status" -eq 0 ]
+    assert_contains "$output" '"id":"hostile"'
+    assert_contains "$output" '"id":"sibling"'
+    hostile="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
+    assert_contains "$hostile" 'reportgnp.exe'
+    refute_contains "$hostile" $'\u202e'
+}
+
+@test "statuslinepy-sub falls back to COLUMNS when object columns is invalid" {
+    json='{"id":"invalid-columns","name":"A very long task name that must truncate","model":"Claude","columns":"auto"}'
+
+    run env -u CLAUDE_CODE_EFFORT_LEVEL COLUMNS=20 \
+        PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+
+    [ "$status" -eq 0 ]
+    content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
+    [ "$(python3 -c 'import sys; from rich.cells import cell_len; print(cell_len(sys.argv[1]))' "$content")" -le 20 ]
+}
+
+@test "statuslinepy-sub degrades parser recursion limits without a traceback" {
+    nested="$(python3 -c 'print("[" * 5000 + "0" + "]" * 5000)')"
+    json="{\"tasks\":[{\"id\":\"valid\",\"name\":\"Valid\",\"model\":\"Claude\"},{\"id\":\"deep\",\"name\":\"Deep\",\"model\":\"Claude\",\"extra\":$nested}]}"
+
+    run_sub "$json"
+
+    [ "$status" -eq 0 ]
+    refute_contains "$output" 'Traceback'
+    refute_contains "$output" 'RecursionError'
+}
+
+@test "statuslinepy-sub exercises dropped-column tiers and the hard width limit" {
+    now_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+
+    for columns in 30 20; do
+        json="{\"columns\":$columns,\"tasks\":[{\"id\":\"short\",\"name\":\"Short\",\"model\":\"claude-opus-5[1m]\",\"effort\":\"medium\",\"startTime\":$((now_ms - 75000)),\"tokenCount\":92000},{\"id\":\"long\",\"name\":\"A much longer task name\",\"model\":\"claude-sonnet-5\",\"effort\":\"medium\",\"startTime\":$((now_ms - 185000)),\"tokenCount\":106000}]}"
+
+        run_sub "$json"
+
+        [ "$status" -eq 0 ]
+        short="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
+        long="$(printf '%s\n' "$output" | sed -n '2p' | jq -r '.content' | strip_ansi)"
+        [ "$(rich_pipe_positions "$short")" = "$(rich_pipe_positions "$long")" ]
+        [ "$(python3 -c 'import sys; from rich.cells import cell_len; print(cell_len(sys.argv[1]))' "$short")" -le "$columns" ]
+        [ "$(python3 -c 'import sys; from rich.cells import cell_len; print(cell_len(sys.argv[1]))' "$long")" -le "$columns" ]
+    done
+}
+
+@test "statuslinepy-sub covers alternate fields effort styles and malformed siblings" {
+    json='{"tasks":["invalid",null,{"id":"alternate","name":"Alternate","model":"Claude","tokens":1500000,"context_window_size":2000000,"thinking":{"enabled":true},"effort":"low"},{"id":"carry","name":"Carry","model":"Claude","tokenCount":999500,"effort":"xhigh"},{"id":"maximum","name":"Maximum","model":"Claude","effort":"max"},{"id":"unknown","name":"Unknown","model":"Claude","effort":"custom"}]}'
+
+    run_sub "$json"
+
+    [ "$status" -eq 0 ]
+    [ "$(printf '%s\n' "$output" | wc -l)" -eq 4 ]
+    alternate="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
+    carry="$(printf '%s\n' "$output" | sed -n '2p' | jq -r '.content' | strip_ansi)"
+    maximum="$(printf '%s\n' "$output" | sed -n '3p' | jq -r '.content' | strip_ansi)"
+    unknown="$(printf '%s\n' "$output" | sed -n '4p' | jq -r '.content' | strip_ansi)"
+    assert_contains "$alternate" '✦ low'
+    assert_contains "$alternate" '1.5M'
+    assert_contains "$carry" 'xhigh'
+    assert_contains "$carry" '1M'
+    assert_contains "$maximum" 'max'
+    assert_contains "$unknown" 'custom'
 }

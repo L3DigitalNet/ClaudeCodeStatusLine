@@ -38,6 +38,7 @@ MIN_EPOCH_MILLISECONDS = 1_000_000_000_000
 MAX_EPOCH_MILLISECONDS = 9_999_999_999_999
 ZERO_DECIMAL = Decimal(0)
 MAX_TOKEN_DISPLAY = Decimal("999000000")
+MODEL_INPUT_CAP = 256
 MODEL_WIDTH_CAP = 32
 EFFORT_WIDTH_CAP = 8
 ELAPSED_WIDTH_CAP = 10
@@ -169,8 +170,11 @@ def sanitize_text(value: str, *, strip_spaces: bool = True) -> str:
     val_str = re.sub(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)", "", val_str)
     # Remove SGR and other CSI escape sequences: \x1b[...]
     val_str = re.sub(r"\x1b\[[0-9;?]*[a-zA-Z]", "", val_str)
-    # Remove C0 and C1 control characters (0x00-0x1F, 0x7F-0x9F)
-    val_str = re.sub(r"[\x00-\x1f\x7f-\x9f]", "", val_str)
+    # Unicode directional controls can visually reorder task text even though
+    # they occupy no cells, so strip them with the terminal control ranges.
+    val_str = re.sub(
+        r"[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]", "", val_str
+    )
     return val_str.strip() if strip_spaces else val_str
 
 
@@ -254,7 +258,7 @@ def format_tokens(value: object) -> str:
     except (InvalidOperation, ValueError, OverflowError):
         rendered = "0"
     compact = rendered.replace(" ", "")
-    return re.sub(r"\.0([kM])$", r"\1", compact)
+    return compact
 
 
 def join_cells(cells: list[Text]) -> Text:
@@ -351,9 +355,13 @@ def build_task_cells(task: JSONObject) -> TaskCells:
         raw_model_str = json_text(model_value.get("display_name"))
     else:
         raw_model_str = json_text(model_value)
+    raw_model_str = raw_model_str[:MODEL_INPUT_CAP]
 
     model_name = re.sub(
-        r"\s*\(([0-9]+\.?[0-9]*[kKmM])\s+context\)", r" \1", raw_model_str, count=1
+        r"\s*\(([0-9]+(?:\.[0-9]+)?[kKmM])\s+context\)",
+        r" \1",
+        raw_model_str,
+        count=1,
     ).strip()
     model_name = re.sub(r"^claude-", "", model_name, count=1, flags=re.IGNORECASE)
     if not model_name:
@@ -496,7 +504,12 @@ def render_task(task_cells: TaskCells, widths: ColumnWidths, max_columns: int) -
 
 
 def main() -> int:
-    """Read stdin and emit JSON output line(s) for subagent tasks."""
+    """Read stdin and emit JSON output line(s) for subagent tasks.
+
+    Malformed documents and parser recursion limits degrade to no overrides
+    with a successful exit. Raising the interpreter recursion limit is unsafe:
+    it can exchange a clean empty result for a process-level C-stack failure.
+    """
     input_text = (
         sys.stdin.buffer.read().decode("utf-8", errors="surrogateescape").rstrip("\n")
     )
@@ -512,7 +525,8 @@ def main() -> int:
     raw_tasks: list[JSONValue] = []
     if isinstance(parsed, dict):
         max_columns = integer(
-            parsed.get("columns") or max_columns,
+            parsed.get("columns"),
+            default=max_columns,
             maximum=MAX_COLUMNS,
         )
         t_val = parsed.get("tasks")
