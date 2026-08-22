@@ -571,6 +571,11 @@ def main() -> int:
             silence_stdout()
             return 0
 
+    try:
+        sys.stdout.buffer.flush()
+    except BrokenPipeError:
+        silence_stdout()
+
     return 0
 
 

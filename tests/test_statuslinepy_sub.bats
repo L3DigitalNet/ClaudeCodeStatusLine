@@ -286,7 +286,7 @@ print(json.dumps({"tasks": [nested]}))
 
 @test "statuslinepy-sub bounds model normalization work and strips directional controls" {
     digits="$(printf '9%.0s' {1..100000})"
-    json="$(jq -nc --arg model "($digits" '{tasks:[{id:"hostile",name:"report\u202egnp.exe\u200f\u061c",model:$model},{id:"sibling",name:"Sibling",model:"Claude"}]}')"
+    json="$(jq -nc --arg model "($digits" '{tasks:[{id:"hostile",name:"report\u202egnp.exe\u200e\u200f\u061c",model:$model},{id:"sibling",name:"Sibling",model:"Claude"}]}')"
 
     run_sub "$json"
 
@@ -296,6 +296,7 @@ print(json.dumps({"tasks": [nested]}))
     hostile="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
     assert_contains "$hostile" 'reportgnp.exe'
     refute_contains "$hostile" $'\u202e'
+    refute_contains "$hostile" $'\u200e'
     refute_contains "$hostile" $'\u200f'
     refute_contains "$hostile" $'\u061c'
 }
@@ -321,17 +322,20 @@ print(json.dumps({"tasks": [nested]}))
     [ "$status" -eq 0 ]
     refute_contains "$output" 'Traceback'
     refute_contains "$output" 'RecursionError'
+    [ "$output" = "" ] || assert_contains "$output" '"id":"valid"'
 }
 
 @test "statuslinepy-sub exits cleanly when a downstream pipe closes" {
-    run bash -o pipefail -c '
-        python3 -c '\''import json; print(json.dumps({"tasks": [{"id": str(i), "name": "Task", "model": "Claude"} for i in range(10000)]}))'\'' |
-            env -u COLUMNS -u CLAUDE_CODE_EFFORT_LEVEL PYTHONPATH="$1" "$2" |
-            head -n 1 >/dev/null
-    ' _ "$RUNTIME_SITE" "$STATUSLINEPY_SUB"
+    for task_count in 1 10000; do
+        run bash -o pipefail -c '
+            python3 -c '\''import json, sys; print(json.dumps({"tasks": [{"id": str(i), "name": "Task", "model": "Claude"} for i in range(int(sys.argv[1]))]}))'\'' "$3" |
+                env -u COLUMNS -u CLAUDE_CODE_EFFORT_LEVEL PYTHONPATH="$1" "$2" |
+                head -n 0 >/dev/null
+        ' _ "$RUNTIME_SITE" "$STATUSLINEPY_SUB" "$task_count"
 
-    [ "$status" -eq 0 ]
-    refute_contains "$output" 'BrokenPipeError'
+        [ "$status" -eq 0 ]
+        refute_contains "$output" 'BrokenPipeError'
+    done
 }
 
 @test "statuslinepy-sub exercises dropped-column tiers and the hard width limit" {
