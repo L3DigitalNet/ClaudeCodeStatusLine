@@ -1,0 +1,4 @@
+# Install with: python3 -m pip install -r requirements-dev.txt
+# Verify the extensionless renderer with: basedpyright --outputjson
+-r requirements.txt
+basedpyright==1.39.9

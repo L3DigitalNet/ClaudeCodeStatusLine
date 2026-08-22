@@ -116,7 +116,7 @@ No `settings.json` changes are needed — the command paths are stable across `m
 
 - Claude Code (Pro/Max subscription for rate-limit and extra-usage display)
 - Bash implementation (macOS / Linux): `jq` and `curl`
-- Python implementation: `curl`, `python3` 3.10+, and the exact Rich and Humanize versions in `requirements.txt`; `jq` is not required
+- Python implementation: `curl`, Python 3.10.7 or newer, and the exact Rich and Humanize versions in `requirements.txt`; `jq` is not required
 - Windows: PowerShell 5.1+ (default on Windows 10/11)
 - `git` in `PATH` (needed to clone or update; optional at runtime, where it enables `@branch` annotations)
 

@@ -173,7 +173,9 @@ def sanitize_text(value: str, *, strip_spaces: bool = True) -> str:
     # Unicode directional controls can visually reorder task text even though
     # they occupy no cells, so strip them with the terminal control ranges.
     val_str = re.sub(
-        r"[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]", "", val_str
+        r"[\x00-\x1f\x7f-\x9f\u061c\u200e-\u200f\u202a-\u202e\u2066-\u2069]",
+        "",
+        val_str,
     )
     return val_str.strip() if strip_spaces else val_str
 
@@ -503,6 +505,18 @@ def render_task(task_cells: TaskCells, widths: ColumnWidths, max_columns: int) -
     return line.render()
 
 
+def silence_stdout() -> None:
+    """Prevent interpreter shutdown from retrying a broken stdout pipe."""
+    try:
+        devnull_fd = os.open(os.devnull, os.O_WRONLY)
+        try:
+            os.dup2(devnull_fd, sys.stdout.fileno())
+        finally:
+            os.close(devnull_fd)
+    except OSError:
+        pass
+
+
 def main() -> int:
     """Read stdin and emit JSON output line(s) for subagent tasks.
 
@@ -554,6 +568,7 @@ def main() -> int:
                 (out_json + "\n").encode("utf-8", errors="surrogateescape")
             )
         except BrokenPipeError:
+            silence_stdout()
             return 0
 
     return 0

@@ -126,15 +126,16 @@ print(" ".join(positions))
 }
 
 @test "statuslinepy-sub handles deeply nested task payloads without crashing" {
+    depth="$(python3 -c 'import sys; print(max(32, sys.getrecursionlimit() - 100))')"
     nested_json="$(python3 -c '
 nested = {"id": "t-deep", "name": "Agent", "model": "Claude"}
 curr = nested
-for _ in range(900):
+for _ in range(int(__import__("sys").argv[1])):
     curr["extra"] = {}
     curr = curr["extra"]
 import json
 print(json.dumps({"tasks": [nested]}))
-')"
+' "$depth")"
     run_sub "$nested_json"
     [ "$status" -eq 0 ]
     assert_contains "$output" '"id":"t-deep"'
@@ -285,7 +286,7 @@ print(json.dumps({"tasks": [nested]}))
 
 @test "statuslinepy-sub bounds model normalization work and strips directional controls" {
     digits="$(printf '9%.0s' {1..100000})"
-    json="$(jq -nc --arg model "($digits" '{tasks:[{id:"hostile",name:"report\u202egnp.exe",model:$model},{id:"sibling",name:"Sibling",model:"Claude"}]}')"
+    json="$(jq -nc --arg model "($digits" '{tasks:[{id:"hostile",name:"report\u202egnp.exe\u200f\u061c",model:$model},{id:"sibling",name:"Sibling",model:"Claude"}]}')"
 
     run_sub "$json"
 
@@ -295,6 +296,8 @@ print(json.dumps({"tasks": [nested]}))
     hostile="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
     assert_contains "$hostile" 'reportgnp.exe'
     refute_contains "$hostile" $'\u202e'
+    refute_contains "$hostile" $'\u200f'
+    refute_contains "$hostile" $'\u061c'
 }
 
 @test "statuslinepy-sub falls back to COLUMNS when object columns is invalid" {
@@ -309,7 +312,8 @@ print(json.dumps({"tasks": [nested]}))
 }
 
 @test "statuslinepy-sub degrades parser recursion limits without a traceback" {
-    nested="$(python3 -c 'print("[" * 5000 + "0" + "]" * 5000)')"
+    depth="$(python3 -c 'import sys; print(sys.getrecursionlimit() * 5)')"
+    nested="$(python3 -c 'import sys; depth = int(sys.argv[1]); print("[" * depth + "0" + "]" * depth)' "$depth")"
     json="{\"tasks\":[{\"id\":\"valid\",\"name\":\"Valid\",\"model\":\"Claude\"},{\"id\":\"deep\",\"name\":\"Deep\",\"model\":\"Claude\",\"extra\":$nested}]}"
 
     run_sub "$json"
@@ -317,6 +321,17 @@ print(json.dumps({"tasks": [nested]}))
     [ "$status" -eq 0 ]
     refute_contains "$output" 'Traceback'
     refute_contains "$output" 'RecursionError'
+}
+
+@test "statuslinepy-sub exits cleanly when a downstream pipe closes" {
+    run bash -o pipefail -c '
+        python3 -c '\''import json; print(json.dumps({"tasks": [{"id": str(i), "name": "Task", "model": "Claude"} for i in range(10000)]}))'\'' |
+            env -u COLUMNS -u CLAUDE_CODE_EFFORT_LEVEL PYTHONPATH="$1" "$2" |
+            head -n 1 >/dev/null
+    ' _ "$RUNTIME_SITE" "$STATUSLINEPY_SUB"
+
+    [ "$status" -eq 0 ]
+    refute_contains "$output" 'BrokenPipeError'
 }
 
 @test "statuslinepy-sub exercises dropped-column tiers and the hard width limit" {
