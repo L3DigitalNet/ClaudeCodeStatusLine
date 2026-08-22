@@ -25,3 +25,6 @@ __pycache__/
 .markdownlint.json
 .prettierignore
 .prettierrc.json
+.rexec.toml
+.pytest_cache/
+.rexec/
