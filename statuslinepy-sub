@@ -15,6 +15,7 @@ import re
 import subprocess
 import sys
 import time
+from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
 from typing import Any
 
@@ -104,6 +105,10 @@ def visible_len(value: Text) -> int:
 
 def padded(value: Text, width: int) -> Text:
     return combine(value, " " * max(0, width - visible_len(value)))
+
+
+def left_padded(value: Text, width: int) -> Text:
+    return combine(" " * max(0, width - visible_len(value)), value)
 
 
 def truncate_text(val: Text, max_w: int) -> Text:
@@ -310,14 +315,26 @@ def format_elapsed(start_time_ms: int) -> str:
     return f"{minutes}:{seconds:02d}"
 
 
-def render_task(
-    task: dict[str, Any],
-    max_columns: int,
-) -> str:
-    """Render a single subagent task object into a single-row status line.
+@dataclass(frozen=True)
+class TaskCells:
+    model: Text
+    effort: Text
+    elapsed: Text
+    tokens: Text
+    task: Text
 
-    Format: model effort | elapsed | tokens | task
-    """
+
+@dataclass(frozen=True)
+class ColumnWidths:
+    model: int
+    effort: int
+    elapsed: int
+    tokens: int
+
+
+def build_task_cells(task: dict[str, Any]) -> TaskCells:
+    """Build styled cells without applying batch-dependent alignment."""
+
     # ── task / status ─────────────────────────────────────────────────────
     name_val = task.get("name") or task.get("label") or task.get("type") or "agent"
     if isinstance(name_val, dict):
@@ -341,6 +358,7 @@ def render_task(
     model_name = re.sub(
         r"\s*\(([0-9]+\.?[0-9]*[kKmM])\s+context\)", r" \1", raw_model_str, count=1
     ).strip()
+    model_name = re.sub(r"^claude-", "", model_name, count=1, flags=re.IGNORECASE)
     if not model_name:
         model_name = "Claude"
     cell_model = text(model_name, BLUE)
@@ -374,8 +392,6 @@ def render_task(
     if thinking_on:
         cell_effort = combine(text("✦", PURPLE), " ", cell_effort)
 
-    cell_model_effort = combine(cell_model, " ", cell_effort)
-
     # ── tokens / context ──────────────────────────────────────────────────
     token_count = integer(task.get("tokenCount") or task.get("tokens") or 0)
     context_size = integer(
@@ -398,40 +414,62 @@ def render_task(
         except (InvalidOperation, ValueError, OverflowError):
             pass
 
-    # ── assemble single row ───────────────────────────────────────────────
-    # Order: model effort | elapsed | tokens | task
-    cells: list[Text] = [
-        cell_model_effort,
-        cell_elapsed,
-        cell_tokens,
-        cell_task,
-    ]
-    line = join_cells(cells)
+    return TaskCells(
+        model=cell_model,
+        effort=cell_effort,
+        elapsed=cell_elapsed,
+        tokens=cell_tokens,
+        task=cell_task,
+    )
 
-    # Adaptive truncation (single row)
-    if max_columns > 0 and visible_len(line) > max_columns:
+
+def measure_columns(tasks: list[TaskCells]) -> ColumnWidths:
+    """Return display-cell widths shared by every row in a task batch."""
+    return ColumnWidths(
+        model=max((visible_len(task.model) for task in tasks), default=0),
+        effort=max((visible_len(task.effort) for task in tasks), default=0),
+        elapsed=max((visible_len(task.elapsed) for task in tasks), default=0),
+        tokens=max((visible_len(task.tokens) for task in tasks), default=0),
+    )
+
+
+def render_task(task_cells: TaskCells, widths: ColumnWidths, max_columns: int) -> str:
+    """Render one row using widths measured across its complete input batch."""
+    cell_model_effort = combine(
+        padded(task_cells.model, widths.model),
+        " ",
+        left_padded(task_cells.effort, widths.effort),
+    )
+    row_cells: list[Text] = [
+        cell_model_effort,
+        left_padded(task_cells.elapsed, widths.elapsed),
+        left_padded(task_cells.tokens, widths.tokens),
+        task_cells.task,
+    ]
+    line = join_cells(row_cells)
+
+    if max_columns > 0:
         candidates = [
-            [cell_model_effort, cell_elapsed, cell_tokens, cell_task],
-            [cell_model_effort, cell_tokens, cell_task],
-            [cell_model_effort, cell_task]
+            row_cells,
+            [cell_model_effort, row_cells[2], row_cells[3]],
+            [cell_model_effort, row_cells[3]],
         ]
-        
+
+        # Every row chooses its tier from the same aligned prefix width. Choosing
+        # only after a particular row overflows would let short tasks keep pipes
+        # that longer tasks dropped.
         for candidate_cells in candidates:
             prefix_cells = candidate_cells[:-1]
             prefix_line = join_cells(prefix_cells)
-            
-            separator_len = 3 if prefix_line and cell_task else 0
-            
+            separator_len = 3 if prefix_line and row_cells[3] else 0
             avail_for_task = max_columns - visible_len(prefix_line) - separator_len
-            
+
             if avail_for_task >= 6 or candidate_cells == candidates[-1]:
                 target_w = max(6, avail_for_task)
-                truncated_task = truncate_text(cell_task, target_w)
-                cells = prefix_cells + [truncated_task]
-                line = join_cells(cells)
+                truncated_task = truncate_text(row_cells[3], target_w)
+                line = join_cells(prefix_cells + [truncated_task])
                 break
 
-        # Hard truncate
         if visible_len(line) > max_columns:
             line = truncate_text(line, max_columns)
 
@@ -472,9 +510,12 @@ def main() -> int:
             continue
         valid_tasks.append(task)
 
-    for task in valid_tasks:
+    prepared_tasks = [build_task_cells(task) for task in valid_tasks]
+    widths = measure_columns(prepared_tasks)
+
+    for task, cells in zip(valid_tasks, prepared_tasks, strict=True):
         task_id = sanitize_text(task.get("id"), strip_spaces=False)
-        content = render_task(task, max_columns)
+        content = render_task(cells, widths, max_columns)
         out_json = json.dumps(
             {"id": task_id, "content": content}, separators=(",", ":")
         )

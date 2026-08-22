@@ -136,3 +136,22 @@ print(json.dumps({"tasks": [nested]}))
     content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
     assert_contains "$content" 'Searcher/running'
 }
+
+@test "statuslinepy-sub aligns model effort elapsed and token columns across tasks" {
+    now_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+    long_start_ms="$((now_ms - 809000))"
+    short_start_ms="$((now_ms - 185000))"
+    json="{\"tasks\":[{\"id\":\"t-opus\",\"name\":\"Inspecting backup-restic.sh/running\",\"model\":\"claude-opus-5[1m]\",\"effort\":\"medium\",\"startTime\":$long_start_ms,\"tokenCount\":92000},{\"id\":\"t-sonnet\",\"name\":\"Adding changelog entry/running\",\"model\":\"claude-sonnet-5\",\"effort\":\"medium\",\"startTime\":$short_start_ms,\"tokenCount\":106000}]}"
+
+    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+
+    [ "$status" -eq 0 ]
+    opus="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
+    sonnet="$(printf '%s\n' "$output" | sed -n '2p' | jq -r '.content' | strip_ansi)"
+    [[ "$opus" =~ ^opus-5\[1m\]\ med\ \|\ 13:[0-9]{2}\ \|\ \ 92k\ \|\  ]]
+    [[ "$sonnet" =~ ^sonnet-5\ \ \ med\ \|\ \ 3:[0-9]{2}\ \|\ 106k\ \|\  ]]
+
+    opus_pipes="$(awk -v text="$opus" 'BEGIN { for (i = 1; i <= length(text); i++) if (substr(text, i, 1) == "|") printf "%s%d", sep, i; sep="," }')"
+    sonnet_pipes="$(awk -v text="$sonnet" 'BEGIN { for (i = 1; i <= length(text); i++) if (substr(text, i, 1) == "|") printf "%s%d", sep, i; sep="," }')"
+    [ "$opus_pipes" = "$sonnet_pipes" ]
+}
