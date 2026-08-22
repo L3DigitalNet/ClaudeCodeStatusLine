@@ -125,6 +125,19 @@ print(" ".join(positions))
     assert_contains "$output" '"id":"t-huge"'
 }
 
+@test "statuslinepy-sub saturates oversized integer literals without sibling loss" {
+    huge_tokens="$(printf '9%.0s' {1..5000})"
+    json="{\"tasks\":[{\"id\":\"valid\",\"name\":\"Valid\",\"model\":\"Claude\"},{\"id\":\"huge\",\"name\":\"Huge\",\"model\":\"Claude\",\"tokenCount\":$huge_tokens}]}"
+
+    run_sub "$json"
+
+    [ "$status" -eq 0 ]
+    assert_contains "$output" '"id":"valid"'
+    assert_contains "$output" '"id":"huge"'
+    huge="$(printf '%s\n' "$output" | sed -n '2p' | jq -r '.content' | strip_ansi)"
+    assert_contains "$huge" '999M+'
+}
+
 @test "statuslinepy-sub handles deeply nested task payloads without crashing" {
     depth="$(python3 -c 'import sys; print(max(32, sys.getrecursionlimit() - 100))')"
     nested_json="$(python3 -c '
@@ -299,6 +312,20 @@ print(json.dumps({"tasks": [nested]}))
     refute_contains "$hostile" $'\u200e'
     refute_contains "$hostile" $'\u200f'
     refute_contains "$hostile" $'\u061c'
+}
+
+@test "statuslinepy-sub bounds zero-cell text by character count" {
+    json="$(python3 -c '
+import json
+marks = "\u0301" * 100000
+print(json.dumps({"id": "bounded", "name": "a" + marks, "status": marks, "model": "Claude", "effort": marks}))
+')"
+
+    run_sub "$json"
+
+    [ "$status" -eq 0 ]
+    content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
+    [ "$(python3 -c 'import sys; print(len(sys.argv[1]))' "$content")" -le 640 ]
 }
 
 @test "statuslinepy-sub falls back to COLUMNS when object columns is invalid" {

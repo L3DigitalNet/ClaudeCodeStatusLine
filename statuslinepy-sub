@@ -39,6 +39,8 @@ MAX_EPOCH_MILLISECONDS = 9_999_999_999_999
 ZERO_DECIMAL = Decimal(0)
 MAX_TOKEN_DISPLAY = Decimal("999000000")
 MODEL_INPUT_CAP = 256
+TASK_INPUT_CAP = 256
+EFFORT_INPUT_CAP = 64
 MODEL_WIDTH_CAP = 32
 EFFORT_WIDTH_CAP = 8
 ELAPSED_WIDTH_CAP = 10
@@ -163,9 +165,15 @@ def truncate_text(val: Text, max_w: int) -> Text:
     return res
 
 
-def sanitize_text(value: str, *, strip_spaces: bool = True) -> str:
-    """Sanitize task-controlled string inputs to prevent ANSI/control byte injection."""
-    val_str = value.replace("\0", "")
+def sanitize_text(
+    value: str,
+    *,
+    strip_spaces: bool = True,
+    max_chars: int | None = None,
+) -> str:
+    """Bound code points and remove controls before terminal rendering."""
+    val_str = value[:max_chars] if max_chars is not None else value
+    val_str = val_str.replace("\0", "")
     # Remove OSC sequences: \x1b]...\x07 or \x1b]...\x1b\
     val_str = re.sub(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)", "", val_str)
     # Remove SGR and other CSI escape sequences: \x1b[...]
@@ -180,13 +188,31 @@ def sanitize_text(value: str, *, strip_spaces: bool = True) -> str:
     return val_str.strip() if strip_spaces else val_str
 
 
-def json_text(value: JSONValue, *, strip_spaces: bool = True) -> str:
+def json_text(
+    value: JSONValue,
+    *,
+    strip_spaces: bool = True,
+    max_chars: int | None = None,
+) -> str:
     """Return sanitized scalar text; containers and booleans degrade to empty."""
     if isinstance(value, str):
-        return sanitize_text(value, strip_spaces=strip_spaces)
+        return sanitize_text(
+            value, strip_spaces=strip_spaces, max_chars=max_chars
+        )
     if isinstance(value, (int, float)) and not isinstance(value, bool):
-        return sanitize_text(str(value), strip_spaces=strip_spaces)
+        return sanitize_text(
+            str(value), strip_spaces=strip_spaces, max_chars=max_chars
+        )
     return ""
+
+
+def parse_json_integer(value: str) -> int:
+    """Parse small JSON integers and saturate oversized literals safely."""
+    negative = value.startswith("-")
+    digit_count = len(value) - int(negative)
+    if digit_count > 18:
+        return -1 if negative else MAX_INTEGER + 1
+    return int(value)
 
 
 def contains_surrogate(value: JSONValue) -> bool:
@@ -315,14 +341,14 @@ def task_name(task: JSONObject) -> str:
     """Return the first valid task name, degrading malformed fields to ``agent``."""
     raw_name = task.get("name")
     if isinstance(raw_name, dict):
-        name = json_text(raw_name.get("name"))
+        name = json_text(raw_name.get("name"), max_chars=TASK_INPUT_CAP)
     else:
-        name = json_text(raw_name)
+        name = json_text(raw_name, max_chars=TASK_INPUT_CAP)
     if name:
         return name
 
     for key in ("label", "type"):
-        fallback = json_text(task.get(key))
+        fallback = json_text(task.get(key), max_chars=TASK_INPUT_CAP)
         if fallback:
             return fallback
     return "agent"
@@ -342,7 +368,7 @@ def build_task_cells(task: JSONObject) -> TaskCells:
     # ── task / status ─────────────────────────────────────────────────────
     name_str = task_name(task)
 
-    status_raw = json_text(task.get("status"))
+    status_raw = json_text(task.get("status"), max_chars=TASK_INPUT_CAP)
     if status_raw:
         cell_task = combine(
             text(name_str, WHITE), text("/", DIM), text(status_raw, DIM)
@@ -354,10 +380,11 @@ def build_task_cells(task: JSONObject) -> TaskCells:
     # ── model effort ──────────────────────────────────────────────────────
     model_value = task.get("model")
     if isinstance(model_value, dict):
-        raw_model_str = json_text(model_value.get("display_name"))
+        raw_model_str = json_text(
+            model_value.get("display_name"), max_chars=MODEL_INPUT_CAP
+        )
     else:
-        raw_model_str = json_text(model_value)
-    raw_model_str = raw_model_str[:MODEL_INPUT_CAP]
+        raw_model_str = json_text(model_value, max_chars=MODEL_INPUT_CAP)
 
     model_name = re.sub(
         r"\s*\(([0-9]+(?:\.[0-9]+)?[kKmM])\s+context\)",
@@ -372,9 +399,11 @@ def build_task_cells(task: JSONObject) -> TaskCells:
 
     effort_value = task.get("effort")
     if isinstance(effort_value, dict):
-        effort_str = json_text(effort_value.get("level"))
+        effort_str = json_text(
+            effort_value.get("level"), max_chars=EFFORT_INPUT_CAP
+        )
     else:
-        effort_str = json_text(effort_value)
+        effort_str = json_text(effort_value, max_chars=EFFORT_INPUT_CAP)
     if effort_str:
         effort_level = effort_str.lower()
         effort_label = "med" if effort_level == "medium" else effort_level
@@ -531,7 +560,10 @@ def main() -> int:
         return 0
 
     try:
-        parsed = cast(JSONValue, json.loads(input_text))
+        parsed = cast(
+            JSONValue,
+            json.loads(input_text, parse_int=parse_json_integer),
+        )
     except (ValueError, RecursionError):
         return 0
 
