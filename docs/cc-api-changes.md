@@ -101,7 +101,7 @@ Version constraints:
 Recommended first design:
 
 ```text
-task/status | model effort | tokens/context | elapsed | cwd
+task/status | model effort | tokens/context | elapsed
 ```
 
 Implementation requirements:

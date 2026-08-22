@@ -30,13 +30,14 @@ setup() {
     assert_contains "$content" '✦ med'
 }
 
-@test "statuslinepy-sub overrides 200k context denominator when model label specifies 1M" {
+@test "statuslinepy-sub shows only token count and drops context limit and percentage" {
     json='{"id":"t-1m","name":"Agent","model":"Fable (1M context)","tokenCount":150000,"contextWindowSize":200000,"cwd":""}'
     run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
     [ "$status" -eq 0 ]
     content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
-    assert_contains "$content" '150k/1M 15%'
-    refute_contains "$content" '75%'
+    assert_contains "$content" '150k'
+    refute_contains "$content" '/1M'
+    refute_contains "$content" '%'
 }
 
 @test "statuslinepy-sub preserves whitespace in opaque IDs" {

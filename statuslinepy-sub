@@ -4,7 +4,7 @@
 Rich owns terminal styling while Humanize supplies SI token prefixes for task
 token counts. Accepts subagent task batches on stdin and outputs JSON task rows.
 
-Format: model effort | elapsed | tokens | task | cwd
+Format: model effort | elapsed | tokens | task
 """
 
 from __future__ import annotations
@@ -255,14 +255,6 @@ def format_tokens(value: object) -> str:
     return re.sub(r"\.0([kM])$", r"\1", compact)
 
 
-def collapse_home(path: str, home: str) -> str:
-    if home and path == home:
-        return "~"
-    if home and path.startswith(home + "/"):
-        return "~" + path[len(home) :]
-    return path
-
-
 def run_command(
     args: list[str],
     *,
@@ -293,23 +285,6 @@ def run_command(
     return output.replace("\0", "")
 
 
-def discover_git_branches(cwds: set[str]) -> dict[str, str]:
-    """Batch-discover git branches once per unique CWD with short timeout."""
-    cache: dict[str, str] = {}
-    for cwd_str in cwds:
-        if not cwd_str:
-            continue
-        branch = run_command(
-            ["git", "-C", cwd_str, "rev-parse", "--abbrev-ref", "HEAD"],
-            keep_stdout_on_error=True,
-            preserve_opaque_bytes=True,
-            timeout=1.0,
-        ).strip()
-        if branch:
-            cache[cwd_str] = branch
-    return cache
-
-
 def join_cells(cells: list[Text]) -> Text:
     """Join non-empty cells with ' | ' separators."""
     separator = combine(" ", text("|", DIM), " ")
@@ -338,14 +313,11 @@ def format_elapsed(start_time_ms: int) -> str:
 def render_task(
     task: dict[str, Any],
     max_columns: int,
-    git_branches: dict[str, str],
 ) -> str:
     """Render a single subagent task object into a single-row status line.
 
-    Format: model effort | elapsed | tokens | task | cwd
+    Format: model effort | elapsed | tokens | task
     """
-    home = os.environ.get("HOME", "")
-
     # ── task / status ─────────────────────────────────────────────────────
     name_val = task.get("name") or task.get("label") or task.get("type") or "agent"
     if isinstance(name_val, dict):
@@ -365,7 +337,6 @@ def render_task(
     if model_raw is None:
         model_raw = task.get("model")
     raw_model_str = sanitize_text(model_raw, strip_spaces=True)
-    is_1m_model = bool(re.search(r"1[mM]\b", raw_model_str))
 
     model_name = re.sub(
         r"\s*\(([0-9]+\.?[0-9]*[kKmM])\s+context\)", r" \1", raw_model_str, count=1
@@ -411,21 +382,10 @@ def render_task(
         task.get("contextWindowSize") or task.get("context_window_size") or 0
     )
 
-    if is_1m_model and (context_size <= 200000 or token_count > context_size):
-        context_size = 1_000_000
-
     cell_tokens = Text()
     if token_count > 0 or context_size > 0:
         t_str = format_tokens(token_count) if token_count > 0 else "0"
-        if context_size > 0 and token_count > context_size:
-            prefix = f"{t_str}/?"
-            cell_tokens = combine(text(prefix, ORANGE), text(" ?%", RED))
-        else:
-            c_str = format_tokens(context_size) if context_size > 0 else ""
-            prefix = f"{t_str}/{c_str}" if c_str else t_str
-            pct_val = (token_count * 100 // context_size) if context_size > 0 else None
-            pct_str = f" {pct_val}%" if pct_val is not None else ""
-            cell_tokens = combine(text(prefix, ORANGE), text(pct_str, GREEN))
+        cell_tokens = text(t_str, ORANGE)
 
     # ── elapsed ───────────────────────────────────────────────────────────
     cell_elapsed = Text()
@@ -438,53 +398,42 @@ def render_task(
         except (InvalidOperation, ValueError, OverflowError):
             pass
 
-    # ── cwd ───────────────────────────────────────────────────────────────
-    cwd_raw = nested(task, "workspace", "current_dir", default=None, strip_spaces=False)
-    if cwd_raw is None:
-        cwd_raw = task.get("cwd")
-    cwd_string = sanitize_text(cwd_raw, strip_spaces=False)
-
-    if cwd_string:
-        cell_cwd = text(collapse_home(cwd_string, home), CYAN)
-    else:
-        cell_cwd = text("-", DIM)
-
     # ── assemble single row ───────────────────────────────────────────────
-    # Order: model effort | elapsed | tokens | task | cwd
+    # Order: model effort | elapsed | tokens | task
     cells: list[Text] = [
         cell_model_effort,
         cell_elapsed,
         cell_tokens,
         cell_task,
-        cell_cwd,
     ]
     line = join_cells(cells)
 
     # Adaptive truncation (single row)
     if max_columns > 0 and visible_len(line) > max_columns:
-        # Tier 1: drop elapsed
-        cells = [cell_model_effort, cell_tokens, cell_task, cell_cwd]
-        line = join_cells(cells)
+        candidates = [
+            [cell_model_effort, cell_elapsed, cell_tokens, cell_task],
+            [cell_model_effort, cell_tokens, cell_task],
+            [cell_model_effort, cell_task]
+        ]
+        
+        for candidate_cells in candidates:
+            prefix_cells = candidate_cells[:-1]
+            prefix_line = join_cells(prefix_cells)
+            
+            separator_len = 3 if prefix_line and cell_task else 0
+            
+            avail_for_task = max_columns - visible_len(prefix_line) - separator_len
+            
+            if avail_for_task >= 6 or candidate_cells == candidates[-1]:
+                target_w = max(6, avail_for_task)
+                truncated_task = truncate_text(cell_task, target_w)
+                cells = prefix_cells + [truncated_task]
+                line = join_cells(cells)
+                break
 
-        # Tier 2: drop tokens
+        # Hard truncate
         if visible_len(line) > max_columns:
-            cells = [cell_model_effort, cell_task, cell_cwd]
-            line = join_cells(cells)
-
-        # Tier 3: truncate cwd
-        if visible_len(line) > max_columns and visible_len(cell_cwd) > 10:
-            target_w = max(8, max_columns - visible_len(line) + visible_len(cell_cwd))
-            cells[-1] = truncate_text(cell_cwd, target_w)
-            line = join_cells(cells)
-
-        # Tier 4: truncate task name
-        if visible_len(line) > max_columns and visible_len(cell_task) > 8:
-            target_w = max(6, max_columns - visible_len(line) + visible_len(cell_task))
-            cells[-2] = truncate_text(cell_task, target_w)
-            line = join_cells(cells)
-
-        # Tier 5: hard truncate
-        line = truncate_text(line, max_columns)
+            line = truncate_text(line, max_columns)
 
     return line.render()
 
@@ -515,7 +464,6 @@ def main() -> int:
         raw_tasks = parsed
 
     valid_tasks: list[dict[str, Any]] = []
-    cwds_to_discover: set[str] = set()
     for task in raw_tasks:
         if not isinstance(task, dict) or contains_surrogate(task):
             continue
@@ -523,19 +471,10 @@ def main() -> int:
         if not task_id:
             continue
         valid_tasks.append(task)
-        cwd_val = nested(
-            task, "workspace", "current_dir", default=None, strip_spaces=False
-        )
-        if cwd_val is None:
-            cwd_val = task.get("cwd")
-        if cwd_val:
-            cwds_to_discover.add(sanitize_text(cwd_val, strip_spaces=False))
-
-    git_branches = discover_git_branches(cwds_to_discover)
 
     for task in valid_tasks:
         task_id = sanitize_text(task.get("id"), strip_spaces=False)
-        content = render_task(task, max_columns, git_branches)
+        content = render_task(task, max_columns)
         out_json = json.dumps(
             {"id": task_id, "content": content}, separators=(",", ":")
         )
