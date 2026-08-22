@@ -5,12 +5,32 @@ load test_helper
 setup() {
     REPO_ROOT="$(cd "$BATS_TEST_DIRNAME/.." && pwd)"
     STATUSLINEPY_SUB="$REPO_ROOT/statuslinepy-sub"
-    RUNTIME_SITE="$(python3 -c 'import os, humanize, rich; print(os.pathsep.join({os.path.dirname(os.path.dirname(humanize.__file__)), os.path.dirname(os.path.dirname(rich.__file__))}))')"
+    RUNTIME_SITE="$(python3 -c 'import os, humanize, rich; print(os.pathsep.join([os.path.dirname(os.path.dirname(humanize.__file__)), os.path.dirname(os.path.dirname(rich.__file__))]))')"
+}
+
+run_sub() {
+    run env -u COLUMNS -u CLAUDE_CODE_EFFORT_LEVEL \
+        PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$1"
+}
+
+rich_pipe_positions() {
+    python3 -c '
+import sys
+from rich.cells import cell_len
+
+column = 0
+positions = []
+for character in sys.argv[1]:
+    column += cell_len(character)
+    if character == "|":
+        positions.append(str(column))
+print(" ".join(positions))
+' "$1"
 }
 
 @test "statuslinepy-sub renders single task JSON with single-row format" {
     json="{\"tasks\":[{\"id\":\"task-1\",\"name\":\"Generalist subagent\",\"model\":\"Claude 3.5 Sonnet\",\"effort\":\"high\",\"cwd\":\"$REPO_ROOT\"}]}"
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    run_sub "$json"
     [ "$status" -eq 0 ]
     assert_contains "$output" '"id":"task-1"'
     content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
@@ -23,7 +43,7 @@ setup() {
 
 @test "statuslinepy-sub handles thinking flag and effort styles" {
     json='{"id":"t-99","name":"Explore","model":"Claude 3 Opus","effort":"medium","thinking":true,"cwd":""}'
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    run_sub "$json"
     [ "$status" -eq 0 ]
     assert_contains "$output" '"id":"t-99"'
     content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
@@ -32,7 +52,7 @@ setup() {
 
 @test "statuslinepy-sub shows only token count and drops context limit and percentage" {
     json='{"id":"t-1m","name":"Agent","model":"Fable (1M context)","tokenCount":150000,"contextWindowSize":200000,"cwd":""}'
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    run_sub "$json"
     [ "$status" -eq 0 ]
     content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
     assert_contains "$content" '150k'
@@ -42,14 +62,14 @@ setup() {
 
 @test "statuslinepy-sub preserves whitespace in opaque IDs" {
     json='{"id":" spaced-id ","name":"Agent","model":"Claude","cwd":""}'
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    run_sub "$json"
     [ "$status" -eq 0 ]
     assert_contains "$output" '"id":" spaced-id "'
 }
 
 @test "statuslinepy-sub measures CJK character cell widths correctly" {
     json='{"columns":20,"tasks":[{"id":"t-cjk","name":"日本語テストエージェント","model":"Claude","cwd":""}]}'
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    run_sub "$json"
     [ "$status" -eq 0 ]
     content="$(printf '%s' "$output" | jq -r '.content')"
     # Single row; strip ANSI and measure
@@ -60,7 +80,7 @@ setup() {
 
 @test "statuslinepy-sub validates tasks independently when surrogate is present" {
     json='{"tasks":[{"id":"t-ok","name":"Good Task","model":"Claude"},{"id":"t-bad","name":"\ud800Task","model":"Claude"}]}'
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    run_sub "$json"
     [ "$status" -eq 0 ]
     assert_contains "$output" '"id":"t-ok"'
     refute_contains "$output" '"id":"t-bad"'
@@ -68,7 +88,7 @@ setup() {
 
 @test "statuslinepy-sub sanitizes external control and OSC sequences" {
     json='{"id":"t-osc","name":"\u001b]8;;https://malicious.com\u001b\\Agent\u001b]8;;\u001b\\","model":"Claude","cwd":""}'
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    run_sub "$json"
     [ "$status" -eq 0 ]
     refute_contains "$output" 'https://malicious.com'
     content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
@@ -77,21 +97,21 @@ setup() {
 
 @test "statuslinepy-sub skips tasks without an id" {
     json='{"tasks":[{"name":"No ID Agent","model":"Claude"}]}'
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    run_sub "$json"
     [ "$status" -eq 0 ]
     [ "$output" = "" ]
 }
 
 @test "statuslinepy-sub handles empty and malformed JSON stdin gracefully" {
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< ""
+    run_sub ""
     [ "$status" -eq 0 ]
     [ "$output" = "" ]
 
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "{invalid json"
+    run_sub "{invalid json"
     [ "$status" -eq 0 ]
     [ "$output" = "" ]
 
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< '{"tasks": "not a list"}'
+    run_sub '{"tasks": "not a list"}'
     [ "$status" -eq 0 ]
     [ "$output" = "" ]
 }
@@ -99,7 +119,7 @@ setup() {
 @test "statuslinepy-sub handles oversized 102-digit tokenCount without crashing" {
     huge_tokens="1000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000000"
     json="{\"tasks\":[{\"id\":\"t-huge\",\"name\":\"Agent\",\"model\":\"Claude\",\"tokenCount\":$huge_tokens,\"cwd\":\"\"}]}"
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    run_sub "$json"
     [ "$status" -eq 0 ]
     assert_contains "$output" '"id":"t-huge"'
 }
@@ -114,15 +134,16 @@ for _ in range(900):
 import json
 print(json.dumps({"tasks": [nested]}))
 ')"
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$nested_json"
+    run_sub "$nested_json"
     [ "$status" -eq 0 ]
+    assert_contains "$output" '"id":"t-deep"'
 }
 
 @test "statuslinepy-sub renders elapsed time from startTime" {
     # startTime ~1 minute ago (epoch ms)
     start_ms="$(python3 -c 'import time; print(int((time.time() - 75) * 1000))')"
     json="{\"id\":\"t-elapsed\",\"name\":\"Agent\",\"model\":\"Claude\",\"startTime\":$start_ms,\"cwd\":\"\"}"
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    run_sub "$json"
     [ "$status" -eq 0 ]
     content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
     # Should contain a mm:ss elapsed like "1:15" or "1:16"
@@ -131,7 +152,7 @@ print(json.dumps({"tasks": [nested]}))
 
 @test "statuslinepy-sub renders task status field" {
     json='{"id":"t-status","name":"Searcher","status":"running","model":"Claude","cwd":""}'
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    run_sub "$json"
     [ "$status" -eq 0 ]
     content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
     assert_contains "$content" 'Searcher/running'
@@ -143,7 +164,7 @@ print(json.dumps({"tasks": [nested]}))
     short_start_ms="$((now_ms - 185000))"
     json="{\"tasks\":[{\"id\":\"t-opus\",\"name\":\"Inspecting backup-restic.sh/running\",\"model\":\"claude-opus-5[1m]\",\"effort\":\"medium\",\"startTime\":$long_start_ms,\"tokenCount\":92000},{\"id\":\"t-sonnet\",\"name\":\"Adding changelog entry/running\",\"model\":\"claude-sonnet-5\",\"effort\":\"medium\",\"startTime\":$short_start_ms,\"tokenCount\":106000}]}"
 
-    run env PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+    run_sub "$json"
 
     [ "$status" -eq 0 ]
     opus="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
@@ -151,7 +172,112 @@ print(json.dumps({"tasks": [nested]}))
     [[ "$opus" =~ ^opus-5\[1m\]\ med\ \|\ 13:[0-9]{2}\ \|\ \ 92k\ \|\  ]]
     [[ "$sonnet" =~ ^sonnet-5\ \ \ med\ \|\ \ 3:[0-9]{2}\ \|\ 106k\ \|\  ]]
 
-    opus_pipes="$(awk -v text="$opus" 'BEGIN { for (i = 1; i <= length(text); i++) if (substr(text, i, 1) == "|") printf "%s%d", sep, i; sep="," }')"
-    sonnet_pipes="$(awk -v text="$sonnet" 'BEGIN { for (i = 1; i <= length(text); i++) if (substr(text, i, 1) == "|") printf "%s%d", sep, i; sep="," }')"
-    [ "$opus_pipes" = "$sonnet_pipes" ]
+    assert_pipes_aligned "$opus" "$sonnet"
+}
+
+@test "statuslinepy-sub validates object fields and normalizes model prefixes case-insensitively" {
+    json='{"tasks":[{"id":"resolved","name":"Agent","model":{"display_name":"Claude-Opus-5"},"effort":{"level":"medium"}},{"id":"malformed","name":["not","text"],"model":{"id":"claude-opus-5"},"effort":{"unexpected":true}}]}'
+
+    run_sub "$json"
+
+    [ "$status" -eq 0 ]
+    resolved="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
+    malformed="$(printf '%s\n' "$output" | sed -n '2p' | jq -r '.content' | strip_ansi)"
+    [[ "$resolved" == "Opus-5 med | Agent" ]]
+    [[ "$malformed" == "Claude   - | agent" ]]
+    refute_contains "$output" "{'"
+}
+
+@test "statuslinepy-sub never guesses missing task effort from the main session" {
+    json='{"id":"missing-effort","name":"Agent","model":"claude-sonnet-5"}'
+
+    run env -u COLUMNS CLAUDE_CODE_EFFORT_LEVEL=max \
+        PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+
+    [ "$status" -eq 0 ]
+    content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
+    [[ "$content" == "sonnet-5 - | Agent" ]]
+}
+
+@test "statuslinepy-sub caps hostile shared widths without hiding sibling tasks" {
+    wide_model="$(printf 'x%.0s' {1..100})"
+    json="$(jq -nc --arg model "$wide_model" '{columns:60,tasks:[{id:"wide",name:"日本語の長い作業名",model:$model,effort:"medium"},{id:"normal",name:"Normal task",model:"claude-opus-5",effort:"medium"}]}')"
+
+    run_sub "$json"
+
+    [ "$status" -eq 0 ]
+    wide="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
+    normal="$(printf '%s\n' "$output" | sed -n '2p' | jq -r '.content' | strip_ansi)"
+    assert_contains "$wide" '日本語'
+    assert_contains "$normal" 'Normal task'
+    [ "$(python3 -c 'import sys; from rich.cells import cell_len; print(cell_len(sys.argv[1]))' "$wide")" -le 60 ]
+    [ "$(python3 -c 'import sys; from rich.cells import cell_len; print(cell_len(sys.argv[1]))' "$normal")" -le 60 ]
+    [ "$(rich_pipe_positions "$wide")" = "$(rich_pipe_positions "$normal")" ]
+}
+
+@test "statuslinepy-sub bounds huge numeric strings and rejects second-based start times" {
+    now_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+    json="{\"tasks\":[{\"id\":\"bounded\",\"name\":\"Bounded\",\"model\":\"Claude\",\"startTime\":1787000000,\"tokenCount\":\"1E+9999999999\"},{\"id\":\"timed\",\"name\":\"Timed\",\"model\":\"Claude\",\"startTime\":$((now_ms - 75000)),\"tokenCount\":92000}]}"
+
+    run_sub "$json"
+
+    [ "$status" -eq 0 ]
+    bounded="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
+    timed="$(printf '%s\n' "$output" | sed -n '2p' | jq -r '.content' | strip_ansi)"
+    assert_contains "$bounded" '999M+'
+    refute_contains "$bounded" 'h'
+    assert_contains "$timed" '1:'
+    [ "$(rich_pipe_positions "$bounded")" = "$(rich_pipe_positions "$timed")" ]
+}
+
+@test "statuslinepy-sub keeps optional columns aligned when a sibling omits them" {
+    now_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+    json="{\"tasks\":[{\"id\":\"full\",\"name\":\"Full\",\"model\":\"Claude-Opus-5\",\"effort\":\"high\",\"startTime\":$((now_ms - 75000)),\"tokenCount\":92000},{\"id\":\"sparse\",\"name\":\"Sparse\",\"model\":\"claude-sonnet-5\"}]}"
+
+    run_sub "$json"
+
+    [ "$status" -eq 0 ]
+    full="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
+    sparse="$(printf '%s\n' "$output" | sed -n '2p' | jq -r '.content' | strip_ansi)"
+    [ "$(rich_pipe_positions "$full")" = "$(rich_pipe_positions "$sparse")" ]
+}
+
+@test "statuslinepy-sub uses one truncation tier for short and long task names" {
+    now_ms="$(python3 -c 'import time; print(int(time.time() * 1000))')"
+    json="{\"columns\":45,\"tasks\":[{\"id\":\"short\",\"name\":\"Short\",\"model\":\"claude-opus-5[1m]\",\"effort\":\"medium\",\"startTime\":$((now_ms - 75000)),\"tokenCount\":92000},{\"id\":\"long\",\"name\":\"A much longer task name that must truncate\",\"model\":\"claude-sonnet-5\",\"effort\":\"medium\",\"startTime\":$((now_ms - 185000)),\"tokenCount\":106000}]}"
+
+    run_sub "$json"
+
+    [ "$status" -eq 0 ]
+    short="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
+    long="$(printf '%s\n' "$output" | sed -n '2p' | jq -r '.content' | strip_ansi)"
+    [ "$(rich_pipe_positions "$short")" = "$(rich_pipe_positions "$long")" ]
+    [ "$(python3 -c 'import sys; from rich.cells import cell_len; print(cell_len(sys.argv[1]))' "$short")" -le 45 ]
+    [ "$(python3 -c 'import sys; from rich.cells import cell_len; print(cell_len(sys.argv[1]))' "$long")" -le 45 ]
+    assert_contains "$long" '…'
+}
+
+@test "statuslinepy-sub honors COLUMNS for top-level task arrays" {
+    json='[{"id":"array","name":"A very long array task name","model":"Claude"}]'
+
+    run env -u CLAUDE_CODE_EFFORT_LEVEL COLUMNS=20 \
+        PYTHONPATH="$RUNTIME_SITE" "$STATUSLINEPY_SUB" <<< "$json"
+
+    [ "$status" -eq 0 ]
+    content="$(printf '%s' "$output" | jq -r '.content' | strip_ansi)"
+    [ "$(python3 -c 'import sys; from rich.cells import cell_len; print(cell_len(sys.argv[1]))' "$content")" -le 20 ]
+}
+
+@test "statuslinepy-sub renders name token and elapsed fallbacks" {
+    start_ms="$(python3 -c 'import time; print(int((time.time() - 3660) * 1000))')"
+    json="{\"tasks\":[{\"id\":\"label\",\"label\":\"Label fallback\",\"model\":\"Claude\",\"contextWindowSize\":200000},{\"id\":\"type\",\"type\":\"Type fallback\",\"model\":\"Claude\",\"startTime\":$start_ms}]}"
+
+    run_sub "$json"
+
+    [ "$status" -eq 0 ]
+    label="$(printf '%s\n' "$output" | sed -n '1p' | jq -r '.content' | strip_ansi)"
+    type="$(printf '%s\n' "$output" | sed -n '2p' | jq -r '.content' | strip_ansi)"
+    assert_contains "$label" '0 | Label fallback'
+    assert_contains "$type" '1:01h'
+    assert_contains "$type" 'Type fallback'
 }

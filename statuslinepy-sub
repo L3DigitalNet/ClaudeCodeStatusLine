@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+# pyright: strict
 """Render the Claude Code subagent status line.
 
 Rich owns terminal styling while Humanize supplies SI token prefixes for task
@@ -12,28 +13,42 @@ from __future__ import annotations
 import json
 import os
 import re
-import subprocess
 import sys
 import time
 from dataclasses import dataclass
 from decimal import ROUND_HALF_UP, Decimal, InvalidOperation
-from typing import Any
+from typing import TypeAlias, cast
 
 import humanize
 from rich.cells import cell_len
 from rich.color import ColorSystem
 from rich.style import Style
 
-VERSION = "1.9.0"
 BLUE = "rgb(0,153,255)"
 ORANGE = "rgb(255,176,85)"
 GREEN = "rgb(0,160,0)"
-CYAN = "rgb(46,149,153)"
 RED = "rgb(255,85,85)"
-YELLOW = "rgb(230,200,0)"
 PURPLE = "rgb(167,139,250)"
 WHITE = "rgb(220,220,220)"
 DIM = "dim"
+
+MAX_INTEGER = 999_999_999_999_999
+MAX_COLUMNS = 10_000
+MIN_EPOCH_MILLISECONDS = 1_000_000_000_000
+MAX_EPOCH_MILLISECONDS = 9_999_999_999_999
+ZERO_DECIMAL = Decimal(0)
+MAX_TOKEN_DISPLAY = Decimal("999000000")
+MODEL_WIDTH_CAP = 32
+EFFORT_WIDTH_CAP = 8
+ELAPSED_WIDTH_CAP = 10
+TOKEN_WIDTH_CAP = 6
+TASK_WIDTH_CAP = 256
+
+JSONScalar: TypeAlias = str | int | float | bool | None
+JSONValue: TypeAlias = (
+    JSONScalar | list["JSONValue"] | dict[str, "JSONValue"]
+)
+JSONObject: TypeAlias = dict[str, JSONValue]
 
 
 class Text:
@@ -57,10 +72,9 @@ class Text:
     def append_text(self, other: Text) -> None:
         self.segments.extend(other.segments)
 
-    def append(self, value: object) -> None:
-        content = str(value)
-        if content:
-            self.segments.append((content, None))
+    def append(self, value: str) -> None:
+        if value:
+            self.segments.append((value, None))
 
     def __bool__(self) -> bool:
         return bool(self.segments)
@@ -127,13 +141,13 @@ def truncate_text(val: Text, max_w: int) -> Text:
         plain_content = re.sub(r"\x1b\[[0-9;]*m", "", content)
         seg_w = cell_len(plain_content)
         if curr_w + seg_w <= budget:
-            res.segments.append((content, style))
+            res.segments.append((plain_content, style))
             curr_w += seg_w
         else:
             avail = budget - curr_w
-            truncated_chars = []
+            truncated_chars: list[str] = []
             char_w = 0
-            for char in content:
+            for char in plain_content:
                 cw = cell_len(char)
                 if char_w + cw <= avail:
                     truncated_chars.append(char)
@@ -148,11 +162,9 @@ def truncate_text(val: Text, max_w: int) -> Text:
     return res
 
 
-def sanitize_text(value: object, *, strip_spaces: bool = True) -> str:
+def sanitize_text(value: str, *, strip_spaces: bool = True) -> str:
     """Sanitize task-controlled string inputs to prevent ANSI/control byte injection."""
-    if value is None or value is False:
-        return ""
-    val_str = str(value).replace("\0", "")
+    val_str = value.replace("\0", "")
     # Remove OSC sequences: \x1b]...\x07 or \x1b]...\x1b\
     val_str = re.sub(r"\x1b\][^\x07\x1b]*(\x07|\x1b\\)", "", val_str)
     # Remove SGR and other CSI escape sequences: \x1b[...]
@@ -162,53 +174,34 @@ def sanitize_text(value: object, *, strip_spaces: bool = True) -> str:
     return val_str.strip() if strip_spaces else val_str
 
 
-def nested(
-    data: object, *keys: str, default: object = None, strip_spaces: bool = True
-) -> object:
-    current = data
-    for key in keys:
-        if (
-            not isinstance(current, dict)
-            or key not in current
-            or current[key] is None
-            or current[key] is False
-        ):
-            return default
-        current = current[key]
-    if isinstance(current, str):
-        return sanitize_text(current, strip_spaces=strip_spaces)
-    return current
+def json_text(value: JSONValue, *, strip_spaces: bool = True) -> str:
+    """Return sanitized scalar text; containers and booleans degrade to empty."""
+    if isinstance(value, str):
+        return sanitize_text(value, strip_spaces=strip_spaces)
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        return sanitize_text(str(value), strip_spaces=strip_spaces)
+    return ""
 
 
-def contains_surrogate(value: object, max_depth: int = 32) -> bool:
+def contains_surrogate(value: JSONValue) -> bool:
     """Detect lone JSON surrogates that jq rejects but json.loads accepts."""
-    try:
-        stack: list[tuple[object, int]] = [(value, 0)]
-        while stack:
-            curr, depth = stack.pop()
-            if depth > max_depth:
+    stack: list[JSONValue] = [value]
+    while stack:
+        current = stack.pop()
+        if isinstance(current, str):
+            if any(0xD800 <= ord(character) <= 0xDFFF for character in current):
                 return True
-            if isinstance(curr, str):
-                if any(0xD800 <= ord(character) <= 0xDFFF for character in curr):
+        elif isinstance(current, dict):
+            for key, item in current.items():
+                if any(0xD800 <= ord(character) <= 0xDFFF for character in key):
                     return True
-            elif isinstance(curr, dict):
-                next_depth = depth + 1
-                for key, item in curr.items():
-                    if isinstance(key, str) and any(
-                        0xD800 <= ord(character) <= 0xDFFF for character in key
-                    ):
-                        return True
-                    stack.append((item, next_depth))
-            elif isinstance(curr, list):
-                next_depth = depth + 1
-                for item in curr:
-                    stack.append((item, next_depth))
-        return False
-    except Exception:
-        return True
+                stack.append(item)
+        elif isinstance(current, list):
+            stack.extend(current)
+    return False
 
 
-def number(value: object, default: Decimal = Decimal(0)) -> Decimal:
+def number(value: object, default: Decimal = ZERO_DECIMAL) -> Decimal:
     try:
         num = Decimal(str(value))
         if num.is_nan() or num.is_infinite():
@@ -218,16 +211,19 @@ def number(value: object, default: Decimal = Decimal(0)) -> Decimal:
         return default
 
 
-def integer(value: object, default: int = 0) -> int:
-    try:
-        val = int(number(value, default=Decimal(default)))
-        if val < 0:
-            return max(0, default)
-        if val > 999_999_999_999_999:
-            return 999_999_999_999_999
-        return val
-    except (OverflowError, ValueError, InvalidOperation):
-        return default
+def integer(
+    value: object,
+    default: int = 0,
+    *,
+    maximum: int = MAX_INTEGER,
+) -> int:
+    """Return a bounded non-negative integer without materializing huge values."""
+    amount = number(value, default=Decimal(default))
+    if amount < 0:
+        return max(0, default)
+    if amount > maximum:
+        return maximum
+    return int(amount)
 
 
 def format_tokens(value: object) -> str:
@@ -235,9 +231,8 @@ def format_tokens(value: object) -> str:
     amount = number(value)
     if amount < 0:
         amount = Decimal(0)
-    max_amount = Decimal("999999999999999")
-    if amount > max_amount:
-        amount = max_amount
+    if amount > MAX_TOKEN_DISPLAY:
+        return "999M+"
     try:
         if amount >= 1_000_000:
             millions = (amount / Decimal(1_000_000)).quantize(
@@ -249,45 +244,17 @@ def format_tokens(value: object) -> str:
                 Decimal("1"), rounding=ROUND_HALF_UP
             )
             if thousands >= 1_000:
-                rendered = humanize.metric(1_000_000, precision=0)
+                rendered = str(humanize.metric(1_000_000, precision=0))
             else:
-                rendered = humanize.metric(int(thousands * 1_000), precision=0)
+                rendered = str(
+                    humanize.metric(int(thousands * 1_000), precision=0)
+                )
         else:
             rendered = str(integer(amount))
     except (InvalidOperation, ValueError, OverflowError):
         rendered = "0"
     compact = rendered.replace(" ", "")
     return re.sub(r"\.0([kM])$", r"\1", compact)
-
-
-def run_command(
-    args: list[str],
-    *,
-    stdin: str | None = None,
-    keep_stdout_on_error: bool = False,
-    preserve_opaque_bytes: bool = False,
-    timeout: float | None = 1.0,
-) -> str:
-    """Return stdout for a quiet external probe, or an empty string on any failure."""
-    try:
-        completed = subprocess.run(
-            args,
-            input=stdin,
-            text=True,
-            encoding="utf-8",
-            errors="surrogateescape" if preserve_opaque_bytes else "strict",
-            stdout=subprocess.PIPE,
-            stderr=subprocess.DEVNULL,
-            check=False,
-            shell=False,
-            timeout=timeout,
-        )
-    except (OSError, UnicodeError, ValueError, subprocess.TimeoutExpired):
-        return ""
-    output = (
-        completed.stdout if completed.returncode == 0 or keep_stdout_on_error else ""
-    )
-    return output.replace("\0", "")
 
 
 def join_cells(cells: list[Text]) -> Text:
@@ -332,28 +299,58 @@ class ColumnWidths:
     tokens: int
 
 
-def build_task_cells(task: dict[str, Any]) -> TaskCells:
-    """Build styled cells without applying batch-dependent alignment."""
+@dataclass(frozen=True)
+class PreparedTask:
+    task_id: str
+    cells: TaskCells
+
+
+def task_name(task: JSONObject) -> str:
+    """Return the first valid task name, degrading malformed fields to ``agent``."""
+    raw_name = task.get("name")
+    if isinstance(raw_name, dict):
+        name = json_text(raw_name.get("name"))
+    else:
+        name = json_text(raw_name)
+    if name:
+        return name
+
+    for key in ("label", "type"):
+        fallback = json_text(task.get(key))
+        if fallback:
+            return fallback
+    return "agent"
+
+
+def start_time_ms(value: JSONValue) -> int | None:
+    """Return a plausible epoch-millisecond timestamp, or ``None`` if invalid."""
+    amount = number(value)
+    if not MIN_EPOCH_MILLISECONDS <= amount <= MAX_EPOCH_MILLISECONDS:
+        return None
+    return int(amount)
+
+
+def build_task_cells(task: JSONObject) -> TaskCells:
+    """Build bounded styled cells without applying batch-dependent alignment."""
 
     # ── task / status ─────────────────────────────────────────────────────
-    name_val = task.get("name") or task.get("label") or task.get("type") or "agent"
-    if isinstance(name_val, dict):
-        name_val = nested(name_val, "name", default="agent")
-    name_str = sanitize_text(name_val, strip_spaces=True) or "agent"
+    name_str = task_name(task)
 
-    status_raw = sanitize_text(task.get("status"), strip_spaces=True)
+    status_raw = json_text(task.get("status"))
     if status_raw:
         cell_task = combine(
             text(name_str, WHITE), text("/", DIM), text(status_raw, DIM)
         )
     else:
         cell_task = text(name_str, WHITE)
+    cell_task = truncate_text(cell_task, TASK_WIDTH_CAP)
 
     # ── model effort ──────────────────────────────────────────────────────
-    model_raw = nested(task, "model", "display_name", default=None)
-    if model_raw is None:
-        model_raw = task.get("model")
-    raw_model_str = sanitize_text(model_raw, strip_spaces=True)
+    model_value = task.get("model")
+    if isinstance(model_value, dict):
+        raw_model_str = json_text(model_value.get("display_name"))
+    else:
+        raw_model_str = json_text(model_value)
 
     model_name = re.sub(
         r"\s*\(([0-9]+\.?[0-9]*[kKmM])\s+context\)", r" \1", raw_model_str, count=1
@@ -361,16 +358,13 @@ def build_task_cells(task: dict[str, Any]) -> TaskCells:
     model_name = re.sub(r"^claude-", "", model_name, count=1, flags=re.IGNORECASE)
     if not model_name:
         model_name = "Claude"
-    cell_model = text(model_name, BLUE)
+    cell_model = truncate_text(text(model_name, BLUE), MODEL_WIDTH_CAP)
 
-    effort_raw = nested(task, "effort", "level", default=None)
-    if effort_raw is None:
-        effort_raw = task.get("effort")
-    effort_str = sanitize_text(effort_raw, strip_spaces=True)
-    if not effort_str:
-        effort_str = sanitize_text(
-            os.environ.get("CLAUDE_CODE_EFFORT_LEVEL", ""), strip_spaces=True
-        )
+    effort_value = task.get("effort")
+    if isinstance(effort_value, dict):
+        effort_str = json_text(effort_value.get("level"))
+    else:
+        effort_str = json_text(effort_value)
     if effort_str:
         effort_level = effort_str.lower()
         effort_label = "med" if effort_level == "medium" else effort_level
@@ -385,12 +379,13 @@ def build_task_cells(task: dict[str, Any]) -> TaskCells:
     else:
         cell_effort = text("-", DIM)
 
-    thinking_on = (
-        nested(task, "thinking", "enabled", default=False) is True
-        or task.get("thinking") is True
+    thinking_value = task.get("thinking")
+    thinking_on = thinking_value is True or (
+        isinstance(thinking_value, dict) and thinking_value.get("enabled") is True
     )
     if thinking_on:
         cell_effort = combine(text("✦", PURPLE), " ", cell_effort)
+    cell_effort = truncate_text(cell_effort, EFFORT_WIDTH_CAP)
 
     # ── tokens / context ──────────────────────────────────────────────────
     token_count = integer(task.get("tokenCount") or task.get("tokens") or 0)
@@ -401,18 +396,15 @@ def build_task_cells(task: dict[str, Any]) -> TaskCells:
     cell_tokens = Text()
     if token_count > 0 or context_size > 0:
         t_str = format_tokens(token_count) if token_count > 0 else "0"
-        cell_tokens = text(t_str, ORANGE)
+        cell_tokens = truncate_text(text(t_str, ORANGE), TOKEN_WIDTH_CAP)
 
     # ── elapsed ───────────────────────────────────────────────────────────
     cell_elapsed = Text()
-    start_time_raw = task.get("startTime")
-    if start_time_raw is not None:
-        try:
-            start_ms = int(Decimal(str(start_time_raw)))
-            if 0 < start_ms < 9_999_999_999_999:
-                cell_elapsed = text(format_elapsed(start_ms), DIM)
-        except (InvalidOperation, ValueError, OverflowError):
-            pass
+    start_ms = start_time_ms(task.get("startTime"))
+    if start_ms is not None:
+        cell_elapsed = truncate_text(
+            text(format_elapsed(start_ms), DIM), ELAPSED_WIDTH_CAP
+        )
 
     return TaskCells(
         model=cell_model,
@@ -426,11 +418,38 @@ def build_task_cells(task: dict[str, Any]) -> TaskCells:
 def measure_columns(tasks: list[TaskCells]) -> ColumnWidths:
     """Return display-cell widths shared by every row in a task batch."""
     return ColumnWidths(
-        model=max((visible_len(task.model) for task in tasks), default=0),
-        effort=max((visible_len(task.effort) for task in tasks), default=0),
-        elapsed=max((visible_len(task.elapsed) for task in tasks), default=0),
-        tokens=max((visible_len(task.tokens) for task in tasks), default=0),
+        model=min(
+            max((visible_len(task.model) for task in tasks), default=0),
+            MODEL_WIDTH_CAP,
+        ),
+        effort=min(
+            max((visible_len(task.effort) for task in tasks), default=0),
+            EFFORT_WIDTH_CAP,
+        ),
+        elapsed=min(
+            max((visible_len(task.elapsed) for task in tasks), default=0),
+            ELAPSED_WIDTH_CAP,
+        ),
+        tokens=min(
+            max((visible_len(task.tokens) for task in tasks), default=0),
+            TOKEN_WIDTH_CAP,
+        ),
     )
+
+
+def prepare_task(value: JSONValue) -> PreparedTask | None:
+    """Validate one task and return bounded cells without affecting siblings.
+
+    Non-object tasks, lone surrogates, and missing identifiers degrade to no
+    override. All other malformed fields degrade independently inside their
+    cells, so one unresolved task cannot suppress valid rows in the batch.
+    """
+    if not isinstance(value, dict) or contains_surrogate(value):
+        return None
+    task_id = json_text(value.get("id"), strip_spaces=False)
+    if not task_id:
+        return None
+    return PreparedTask(task_id=task_id, cells=build_task_cells(value))
 
 
 def render_task(task_cells: TaskCells, widths: ColumnWidths, max_columns: int) -> str:
@@ -485,14 +504,17 @@ def main() -> int:
         return 0
 
     try:
-        parsed = json.loads(input_text)
-    except json.JSONDecodeError:
+        parsed = cast(JSONValue, json.loads(input_text))
+    except (ValueError, RecursionError):
         return 0
 
-    max_columns = 0
-    raw_tasks: list[Any] = []
+    max_columns = integer(os.environ.get("COLUMNS") or 0, maximum=MAX_COLUMNS)
+    raw_tasks: list[JSONValue] = []
     if isinstance(parsed, dict):
-        max_columns = integer(parsed.get("columns") or os.environ.get("COLUMNS") or 0)
+        max_columns = integer(
+            parsed.get("columns") or max_columns,
+            maximum=MAX_COLUMNS,
+        )
         t_val = parsed.get("tasks")
         if isinstance(t_val, list):
             raw_tasks = t_val
@@ -501,27 +523,24 @@ def main() -> int:
     elif isinstance(parsed, list):
         raw_tasks = parsed
 
-    valid_tasks: list[dict[str, Any]] = []
-    for task in raw_tasks:
-        if not isinstance(task, dict) or contains_surrogate(task):
-            continue
-        task_id = sanitize_text(task.get("id"), strip_spaces=False)
-        if not task_id:
-            continue
-        valid_tasks.append(task)
+    prepared_tasks: list[PreparedTask] = []
+    for raw_task in raw_tasks:
+        prepared = prepare_task(raw_task)
+        if prepared is not None:
+            prepared_tasks.append(prepared)
+    widths = measure_columns([task.cells for task in prepared_tasks])
 
-    prepared_tasks = [build_task_cells(task) for task in valid_tasks]
-    widths = measure_columns(prepared_tasks)
-
-    for task, cells in zip(valid_tasks, prepared_tasks, strict=True):
-        task_id = sanitize_text(task.get("id"), strip_spaces=False)
-        content = render_task(cells, widths, max_columns)
+    for task in prepared_tasks:
+        content = render_task(task.cells, widths, max_columns)
         out_json = json.dumps(
-            {"id": task_id, "content": content}, separators=(",", ":")
+            {"id": task.task_id, "content": content}, separators=(",", ":")
         )
-        sys.stdout.buffer.write(
-            (out_json + "\n").encode("utf-8", errors="surrogateescape")
-        )
+        try:
+            _ = sys.stdout.buffer.write(
+                (out_json + "\n").encode("utf-8", errors="surrogateescape")
+            )
+        except BrokenPipeError:
+            return 0
 
     return 0
 
