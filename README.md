@@ -44,7 +44,7 @@ Ask Claude Code:
 
 > Clone <https://github.com/chrisdpurcell/ClaudeCodeStatusLine> to `~/.claude/statusline/` (or `%USERPROFILE%\.claude\statusline\` on Windows) and configure it as my status bar by following its INSTALL.md.
 
-Claude will clone the repo to that path, choose the Bash, PowerShell, or Python implementation, and update `settings.json`. The Python option uses the extensionless `statuslinepy` executable and requires Python 3.10.7 or newer with its pinned Rich and Humanize dependencies. Full step-by-step instructions Claude follows live in [INSTALL.md](INSTALL.md).
+Claude will clone the repo to that path, choose the Python (`statuslinepy`) or PowerShell (`statusline.ps1`) implementation, and update `settings.json`. The Python implementation requires Python 3.10.7 or newer with its pinned Rich and Humanize dependencies. Full step-by-step instructions Claude follows live in [INSTALL.md](INSTALL.md).
 
 Restart Claude Code after Claude saves the configuration.
 
@@ -60,14 +60,13 @@ Or update it yourself:
 git -C ~/.claude/statusline pull --ff-only origin main
 ```
 
-No `settings.json` changes are needed — the path stays valid across `main` updates.
+No `settings.json` changes are needed — the path stays valid across `main` updates. The one exception: if your command still points at `statusline.sh`, the former Bash implementation removed on 2026-08-02, switch to `statuslinepy` as described in [INSTALL.md](INSTALL.md#migrating-from-statuslinesh).
 
 ## Requirements
 
 - Claude Code with OAuth authentication (Pro/Max subscription for rate-limit and extra-usage data)
 - `git` in `PATH` to clone or update (optional at runtime, where it enables `@branch` annotations)
-- Bash implementation (macOS / Linux): `jq` and `curl`
-- Python alternative: `curl` and Python 3.10.7 or newer with the packages pinned in [`requirements.txt`](requirements.txt); `jq` is not required
+- macOS / Linux / WSL: `curl` and Python 3.10.7 or newer with the packages pinned in [`requirements.txt`](requirements.txt)
 - Windows: PowerShell 5.1+ (default on Windows 10/11)
 
 ## Caching

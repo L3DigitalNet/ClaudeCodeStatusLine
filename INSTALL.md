@@ -4,10 +4,11 @@ This document is the authoritative install guide.
 
 ## 1. Detect the operating system
 
-- **macOS, Linux, WSL, or Windows with Git Bash** → use `statusline.sh`, or `statuslinepy` when the Python runtime below is installed
-- **Windows through PowerShell or CMD** → use `statusline.ps1`
+- **macOS, Linux, or WSL** → use `statuslinepy`, the Python implementation.
+- **Windows through PowerShell or CMD** → use `statusline.ps1`.
+- **Windows with Git Bash** → use `statuslinepy` when Python 3.10.7+ is installed. Otherwise use `statusline.ps1`, which Git Bash can also run.
 
-Git Bash can also invoke the PowerShell implementation; choose the Bash implementation when its `jq` dependency is available.
+> `statusline.sh` and `statusline` in this repository are **not** Claude Code status lines. They render the footer of a different CLI, so do not configure either one in `settings.json`. Until 2026-08-02, `statusline.sh` was the Bash implementation of this status line. That version has been removed; see [Migrating from `statusline.sh`](#migrating-from-statuslinesh).
 
 ## 2. Clone the repo
 
@@ -17,10 +18,10 @@ Clone to `~/.claude/statusline/` on Unix, or `%USERPROFILE%\.claude\statusline\`
 
 ```bash
 git clone https://github.com/chrisdpurcell/ClaudeCodeStatusLine ~/.claude/statusline
-chmod +x ~/.claude/statusline/statusline.sh ~/.claude/statusline/statuslinepy ~/.claude/statusline/statuslinepy-sub
+chmod +x ~/.claude/statusline/statuslinepy ~/.claude/statusline/statuslinepy-sub
 ```
 
-To use the Python implementation, install its pinned dependencies into the `python3` interpreter that will run `statuslinepy`, then verify both imports:
+Install the pinned dependencies into the `python3` interpreter that will run `statuslinepy` (the first `python3` on `PATH`, because the script starts with `#!/usr/bin/env python3`). Then verify both imports:
 
 ```bash
 python3 -m pip install --user -r ~/.claude/statusline/requirements.txt
@@ -40,16 +41,12 @@ Add (or update) the `statusLine` key in `~/.claude/settings.json` (Unix) or `%US
 ### macOS / Linux settings
 
 ```json
-{ "statusLine": { "type": "command", "command": "~/.claude/statusline/statusline.sh" } }
-```
-
-For the Python implementation, use its extensionless executable instead:
-
-```json
 { "statusLine": { "type": "command", "command": "~/.claude/statusline/statuslinepy" } }
 ```
 
-To enable the subagent status line with Python, configure `subagentStatusLine` (preserving any pre-existing custom `subagentStatusLine` setting if present):
+If the dependencies are installed in a different interpreter than the first `python3` on `PATH`, name that interpreter explicitly, for example `"command": "/usr/bin/python3 ~/.claude/statusline/statuslinepy"`.
+
+To also enable the subagent status line, configure `subagentStatusLine` (preserving any pre-existing custom `subagentStatusLine` setting if present):
 
 ```json
 {
@@ -105,7 +102,14 @@ On Windows PowerShell, use:
 git -C "$env:USERPROFILE\.claude\statusline" pull --ff-only origin main
 ```
 
-No `settings.json` changes are needed — the command paths are stable across `main` updates.
+No `settings.json` changes are needed when your command already points at `statuslinepy`, `statuslinepy-sub`, or `statusline.ps1`.
+
+### Migrating from `statusline.sh`
+
+If `statusLine.command` still points at `~/.claude/statusline/statusline.sh`, you are no longer running this status line: since 2026-08-02 that file renders a different CLI's footer, which shows `idle` and 0% usage under Claude Code. To migrate:
+
+1. Install the Python dependencies as described in [macOS / Linux clone](#macos--linux-clone).
+2. Change `statusLine.command` to `~/.claude/statusline/statuslinepy`.
 
 ## Uninstalling
 
@@ -115,9 +119,6 @@ No `settings.json` changes are needed — the command paths are stable across `m
 ## Requirements
 
 - Claude Code (Pro/Max subscription for rate-limit and extra-usage display)
-- Bash implementation (macOS / Linux): `jq` and `curl`
-- Python implementation: `curl`, Python 3.10.7 or newer, and the exact Rich and Humanize versions in `requirements.txt`; `jq` is not required
-- Windows: PowerShell 5.1+ (default on Windows 10/11)
+- macOS / Linux / WSL (`statuslinepy`): `curl`, Python 3.10.7 or newer, and the exact Rich and Humanize versions in `requirements.txt`
+- Windows (`statusline.ps1`): PowerShell 5.1+ (default on Windows 10/11)
 - `git` in `PATH` (needed to clone or update; optional at runtime, where it enables `@branch` annotations)
-
-To use the Bash implementation, install `jq` with the system package manager (`brew install jq`, `apt install jq`, etc.).
