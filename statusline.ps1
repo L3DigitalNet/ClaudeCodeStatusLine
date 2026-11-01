@@ -93,6 +93,15 @@ function Coalesce($value, $default) {
     if ($null -ne $value) { return $value } else { return $default }
 }
 
+# A usage-API rate-limit window counts as present unless it is $null or boolean $false.
+# Type-check rather than `-ne $false`: PowerShell coerces $false to the left operand's type,
+# so a scalar 0 would compare equal and diverge from statuslinepy's identity checks.
+function Test-UsageWindow($window) {
+    if ($null -eq $window) { return $false }
+    if ($window -is [bool]) { return $window }
+    return $true
+}
+
 # Return $true if $a > $b using semantic versioning
 function Test-VersionGreaterThan([string]$a, [string]$b) {
     try {
@@ -431,10 +440,13 @@ if ($needsRefresh) {
             }
             $response = Invoke-RestMethod -Uri "https://api.anthropic.com/api/oauth/usage" `
                 -Headers $headers -Method Get -TimeoutSec 10 -ErrorAction Stop
-            # Only cache a real usage payload (mirrors Bash's `jq -e '.five_hour'`). A 200 with an
+            # Only cache a real usage payload: require at least one rate-limit window. A 200 with an
             # unexpected body (maintenance/error JSON, shape change) would otherwise poison the cache
             # for the full TTL and render as "5h 0% | 7d 0%"; reject it and keep the last-valid cache.
-            if ($null -ne $response.five_hour) {
+            # Either window suffices: verified Ultra accounts have no five-hour limit and the API
+            # sends five_hour: null (observed 2026-11-01) while still carrying seven_day, limits[]
+            # (Fable) and extra_usage. Mirrors statuslinepy's curl_usage gate.
+            if ((Test-UsageWindow $response.five_hour) -or (Test-UsageWindow $response.seven_day)) {
                 $usageData = $response | ConvertTo-Json -Depth 10
                 $usageData | Set-Content $cacheFile -Force
             }
@@ -446,10 +458,17 @@ if ($needsRefresh) {
 }
 
 # Format ISO reset time to compact local time
-function Format-ResetTime([string]$isoStr, [string]$style) {
-    if (-not $isoStr -or $isoStr -eq "null") { return $null }
+function Format-ResetTime([object]$isoStr, [string]$style) {
+    if ($null -eq $isoStr -or "$isoStr" -eq "" -or "$isoStr" -eq "null") { return $null }
     try {
-        $dt = [DateTimeOffset]::Parse($isoStr, [System.Globalization.CultureInfo]::InvariantCulture).LocalDateTime
+        # PowerShell 7's ConvertFrom-Json/Invoke-RestMethod pre-parse ISO strings into DateTime
+        # (Kind=Utc for "Z"). A [string] parameter would stringify that without its zone and
+        # Parse would then read the UTC wall time as local — the reset rendered hours off.
+        # Windows PowerShell 5.1 leaves strings alone, so both shapes must be handled.
+        # ToLocalTime treats Kind=Unspecified as UTC, which is what this API emits.
+        $dt = if ($isoStr -is [DateTime]) { $isoStr.ToLocalTime() } else {
+            [DateTimeOffset]::Parse([string]$isoStr, [System.Globalization.CultureInfo]::InvariantCulture).LocalDateTime
+        }
         switch ($style) {
             # 24-hour, capitalized, invariant culture — matches Bash strftime %H:%M / %a@%H:%M / %b %-d.
             "time"     { return $dt.ToString("HH:mm", [System.Globalization.CultureInfo]::InvariantCulture) }
@@ -617,19 +636,25 @@ if ($effectiveBuiltin) {
             $limitsJson = "[" + ($elems -join ",") + "]"
         } catch {}
     }
-    $fallbackJson = "{`"five_hour`":{`"utilization`":$fhVal,`"resets_at`":$fhResetJson},`"seven_day`":{`"utilization`":$sdVal,`"resets_at`":$sdResetJson},`"limits`":$limitsJson,`"extra_usage`":$extraJson}"
+    # An absent stdin five-hour window (verified Ultra) is cached as null, not 0%, so a later
+    # cache-only render shows the dim '-' rather than a fabricated "5h 0%".
+    $fhJson = if ($null -eq $builtinFiveHourPct) { "null" } else { "{`"utilization`":$fhVal,`"resets_at`":$fhResetJson}" }
+    $fallbackJson = "{`"five_hour`":$fhJson,`"seven_day`":{`"utilization`":$sdVal,`"resets_at`":$sdResetJson},`"limits`":$limitsJson,`"extra_usage`":$extraJson}"
     $fallbackJson | Set-Content $cacheFile -Force
-} elseif ($parsedUsage -and $null -ne $parsedUsage.five_hour) {
+} elseif ($parsedUsage -and ((Test-UsageWindow $parsedUsage.five_hour) -or (Test-UsageWindow $parsedUsage.seven_day))) {
     # ---- Fall back: API-fetched usage data ----
-    # Require .five_hour (mirrors Bash's `jq -e '.five_hour'`) so a cache object lacking it
-    # falls through to the placeholder branch instead of rendering a misleading "5h 0% | 7d 0%".
+    # Require a rate-limit window so a cache object lacking both falls through to the placeholder
+    # branch instead of rendering a misleading "5h 0% | 7d 0%". five_hour is null on verified
+    # Ultra accounts (no five-hour limit); that keeps the dim '-' while 7d still renders.
     try {
         # ---- 5-hour (current) ----
-        $fiveHourPct = [math]::Floor([double](Coalesce $parsedUsage.five_hour.utilization 0))
-        $fiveHourReset = Format-ResetTime $parsedUsage.five_hour.resets_at "time"
-        $fhPctTxt = "${fiveHourPct}%"
-        $fhColor = Get-UsageColor $fiveHourPct
-        if ($fiveHourReset) { $fhTime = "@${fiveHourReset}" }
+        if (Test-UsageWindow $parsedUsage.five_hour) {
+            $fiveHourPct = [math]::Floor([double](Coalesce $parsedUsage.five_hour.utilization 0))
+            $fiveHourReset = Format-ResetTime $parsedUsage.five_hour.resets_at "time"
+            $fhPctTxt = "${fiveHourPct}%"
+            $fhColor = Get-UsageColor $fiveHourPct
+            if ($fiveHourReset) { $fhTime = "@${fiveHourReset}" }
+        }
 
         # ---- 7-day (weekly) ----
         $sevenDayPct = [math]::Floor([double](Coalesce $parsedUsage.seven_day.utilization 0))

@@ -385,8 +385,13 @@ def curl_usage(token: str, client_version: str) -> dict[str, Any] | None:
         return None
     if not isinstance(parsed, dict):
         return None
-    five_hour = parsed.get("five_hour")
-    if five_hour is None or five_hour is False:
+    # A 200 with an error/maintenance body must not replace the last good cache, so
+    # require at least one rate-limit window. Either one suffices: verified Ultra
+    # accounts have no five-hour limit and the API sends `five_hour: null` (observed
+    # 2026-11-01), yet the payload still carries seven_day, limits[] (Fable) and
+    # extra_usage. Gating on five_hour alone discarded all of that.
+    windows = (parsed.get("five_hour"), parsed.get("seven_day"))
+    if all(window is None or window is False for window in windows):
         return None
     return parsed
 
@@ -544,8 +549,12 @@ def rewrite_builtin_cache(
 
     # limits and extra_usage are API-only. Dropping them during the builtin rewrite
     # makes the Fable and dollars cells flicker on every sub-minute cached render.
+    # An absent stdin five-hour window (verified Ultra) is cached as null, not 0%, so a
+    # later cache-only render shows the dim `-` rather than a fabricated `5h 0%`.
     rewritten = {
-        "five_hour": {"utilization": five_pct or 0, "resets_at": iso(five_reset)},
+        "five_hour": None
+        if five_pct is None
+        else {"utilization": five_pct or 0, "resets_at": iso(five_reset)},
         "seven_day": {"utilization": seven_pct or 0, "resets_at": iso(seven_reset)},
         "limits": usage_data.get("limits") if usage_data else None,
         "extra_usage": usage_data.get("extra_usage") if usage_data else None,
@@ -578,17 +587,19 @@ def usage_cells(
         rewrite_builtin_cache(
             cache_file, usage_data, five_pct, five_reset, seven_pct, seven_reset
         )
-    elif (
-        usage_data
-        and usage_data.get("five_hour") is not None
-        and usage_data.get("five_hour") is not False
+    elif usage_data and any(
+        usage_data.get(key) is not None and usage_data.get(key) is not False
+        for key in ("five_hour", "seven_day")
     ):
-        five = usage_data["five_hour"]
+        five = usage_data.get("five_hour")
         seven = usage_data.get("seven_day")
         if isinstance(five, dict):
             percent = integer(nested(five, "utilization", default=0))
             fh_text, fh_style = f"{percent}%", usage_style(percent)
             moment = parse_iso(nested(five, "resets_at"))
+        elif five is None or five is False:
+            # No five-hour limit on this plan (verified Ultra): keep the dim `-`.
+            moment = None
         else:
             # jq accepts every value except null/false at the response gate, then
             # member access on a scalar yields an empty utilization in this pipeline.

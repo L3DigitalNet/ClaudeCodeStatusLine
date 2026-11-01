@@ -25,7 +25,7 @@ v2.1.198    $0/$25 | Fable   79% | 7d 12% Sun@19:00 | -3  | ~/projects/hw-radar
 | --- | --- | --- |
 | **Model + Effort** | row 1, col 1 | Model name (a `(1M context)` suffix collapses to `1M`), a `✦` when extended thinking is enabled, and the reasoning effort level (`low`, `med`, `high`, `xhigh`, `max`). The effort word right-aligns to the column edge, stacking over the extra-usage dollars below it |
 | **Tokens** | row 1, col 2 | Used / total context-window tokens and % used (the % right-aligns to the column edge, stacking under the Fable %) |
-| **5h** | row 1, col 3 | 5-hour rate-limit usage percentage and reset time |
+| **5h** | row 1, col 3 | 5-hour rate-limit usage percentage and reset time. Shows a dim `-` when your plan has no 5-hour limit (verified Ultra accounts) |
 | **Lines +/−** | col 4 | Unstaged line changes in tracked files, `+added` stacked over `-removed` (staged and untracked changes aren't counted). The column appears only while the tree is dirty |
 | **CWD@Branch:Worktree** | row 1, last | Current folder name and git branch; in `--worktree` sessions the worktree name follows the branch as `@branch:worktree`. Omitted (with its row-2 path partner) when Claude Code supplies no working directory |
 | **Version + Extra** | row 2, col 1 | Installed Claude Code CLI version (or `-` when unknown), with extra-usage credits `$spent/$limit` right-aligned to the column edge whenever extra usage is enabled (whole dollars drop the cents: `$0/$25`) |
